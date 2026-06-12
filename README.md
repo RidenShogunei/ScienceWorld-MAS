@@ -67,6 +67,8 @@ python sft_trainer.py `
   --base-model Qwen/Qwen2.5-1.5B-Instruct `
   --agents both `
   --epochs 2 `
+  --log-every-updates 100 `
+  --save-every-updates 1000 `
   --use-4bit
 ```
 
@@ -76,6 +78,9 @@ Best validation-loss adapters are written to:
 artifacts/checkpoints/sft/main_agent/best
 artifacts/checkpoints/sft/sub_agent/best
 ```
+
+Long runs also update `main_agent/latest` or `sub_agent/latest` every 1,000
+optimizer steps and print elapsed time plus ETA every 100 steps.
 
 Run held-out offline generation evaluation before installing ScienceWorld:
 

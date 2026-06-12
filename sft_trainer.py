@@ -7,6 +7,7 @@ import json
 import math
 import random
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -229,6 +230,7 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     history = []
     best_val = float("inf")
     update_step = 0
+    started_at = time.time()
     optimizer.zero_grad(set_to_none=True)
 
     for epoch in range(1, args.epochs + 1):
@@ -248,6 +250,20 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 update_step += 1
+                if update_step % args.log_every_updates == 0:
+                    elapsed = time.time() - started_at
+                    updates_per_second = update_step / max(elapsed, 1e-6)
+                    remaining = max(total_updates - update_step, 0)
+                    eta_seconds = remaining / max(updates_per_second, 1e-6)
+                    print(
+                        f"[{category}] update={update_step}/{total_updates} "
+                        f"loss={running_loss / max(batches, 1):.4f} "
+                        f"lr={scheduler.get_last_lr()[0]:.2e} "
+                        f"elapsed_min={elapsed / 60:.1f} eta_min={eta_seconds / 60:.1f}",
+                        flush=True,
+                    )
+                if args.save_every_updates and update_step % args.save_every_updates == 0:
+                    save_adapter(model, tokenizer, output_dir / "latest")
                 if args.max_updates is not None and update_step >= args.max_updates:
                     break
 
@@ -274,6 +290,7 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
         "best_val_loss": best_val,
         "best_val_perplexity": math.exp(min(best_val, 20)),
         "updates": update_step,
+        "elapsed_seconds": time.time() - started_at,
         "history": history,
         "run_config": {
             "epochs": args.epochs,
@@ -333,6 +350,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-limit", type=int, default=None)
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--max-eval-batches", type=int, default=None)
+    parser.add_argument("--log-every-updates", type=int, default=100)
+    parser.add_argument("--save-every-updates", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=123)
     return parser.parse_args()
 
