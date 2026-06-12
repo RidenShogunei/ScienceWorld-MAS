@@ -1,0 +1,8 @@
+huggingface_hub>=0.27
+torch>=2.4
+transformers>=4.45
+peft>=0.13
+accelerate>=1.0
+safetensors>=0.4
+pytest>=8.0
+
