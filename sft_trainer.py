@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
+import torch
+
+# Force CUDA init before huggingface_hub import corrupts it
+if os.environ.get("CUDA_VISIBLE_DEVICES", ""):
+    _ = torch.cuda.device_count()
+
 import argparse
 import json
 import math
@@ -11,7 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
+from tqdm import tqdm
+
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -125,23 +134,22 @@ class CausalCollator:
 
 def load_model(base_model: str, use_4bit: bool):
     ensure_torch_set_submodule()
-    quantization_config = None
     kwargs: dict[str, Any] = {
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
     }
     if use_4bit:
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
+        kwargs.update(
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            ),
+            device_map="auto",
         )
-        kwargs.update(quantization_config=quantization_config, device_map="auto")
     else:
-        kwargs["dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        if torch.cuda.is_available():
-            kwargs["device_map"] = {"": 0}
+        kwargs["dtype"] = torch.bfloat16 if torch.cuda.device_count() > 0 else torch.float32
 
     model = AutoModelForCausalLM.from_pretrained(base_model, **kwargs)
     if use_4bit:
@@ -169,7 +177,8 @@ def save_adapter(model, tokenizer, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(destination)
+    unwrapped = model
+    unwrapped.save_pretrained(destination)
     tokenizer.save_pretrained(destination)
 
 
@@ -210,12 +219,20 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
         model.gradient_checkpointing_enable()
     model.print_trainable_parameters()
 
-    device = next(model.parameters()).device
+    if torch.cuda.device_count() > 0 and not args.use_4bit:
+        device = torch.device("cuda:0")
+        print(f"[{category}] moving model to {device}...", flush=True)
+        model = model.to(device)
+    else:
+        device = next(model.parameters()).device
+
+    print(f"[{category}] device={device} creating optimizer...", flush=True)
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    print(f"[{category}] optimizer created, steps={len(train_loader)}", flush=True)
     total_updates = math.ceil(len(train_loader) / args.gradient_accumulation_steps) * args.epochs
     warmup_updates = int(total_updates * args.warmup_ratio)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -232,24 +249,29 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     update_step = 0
     started_at = time.time()
     optimizer.zero_grad(set_to_none=True)
+    steps_per_epoch = len(train_loader)
 
     for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss = 0.0
         batches = 0
-        for batch_index, batch in enumerate(train_loader, 1):
+        pbar = tqdm(train_loader, desc=f"[{category}] epoch {epoch}/{args.epochs}", unit="step",
+                    bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}")
+        for batch_index, batch in enumerate(pbar, 1):
             batch = {key: value.to(device) for key, value in batch.items()}
             loss = model(**batch).loss / args.gradient_accumulation_steps
             loss.backward()
             running_loss += float(loss) * args.gradient_accumulation_steps
             batches += 1
 
-            if batch_index % args.gradient_accumulation_steps == 0 or batch_index == len(train_loader):
+            if batch_index % args.gradient_accumulation_steps == 0 or batch_index == steps_per_epoch:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 update_step += 1
+                pbar.set_postfix(loss=f"{running_loss / max(batches, 1):.4f}",
+                                 updates=f"{update_step}")
                 if update_step % args.log_every_updates == 0:
                     elapsed = time.time() - started_at
                     updates_per_second = update_step / max(elapsed, 1e-6)
@@ -315,7 +337,7 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     del model
-    if torch.cuda.is_available():
+    if torch.cuda.device_count() > 0:
         torch.cuda.empty_cache()
     return metrics
 
@@ -328,9 +350,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--agents", choices=("main", "sub", "both"), default="both")
     parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--eval-batch-size", type=int, default=1)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--eval-batch-size", type=int, default=8)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
@@ -344,7 +366,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    parser.add_argument("--use-4bit", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-4bit", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--train-limit", type=int, default=None)
     parser.add_argument("--val-limit", type=int, default=None)
