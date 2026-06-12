@@ -10,6 +10,7 @@ from scienceworld_data import (
     parse_action_done,
     strip_embedded_instruction,
 )
+from provenance import portable_reference
 from sft_trainer import ensure_torch_set_submodule
 
 
@@ -70,3 +71,13 @@ def test_set_submodule_compatibility():
     replacement = torch.nn.Linear(2, 1)
     root.set_submodule("0.0", replacement)
     assert root[0][0] is replacement
+
+
+def test_portable_reference_hides_external_parent(tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    reference = portable_reference(str(model), root=tmp_path / "different-root")
+    assert reference["type"] == "external_local_path"
+    assert reference["value"] == "model"
+    assert str(tmp_path) not in str(reference)

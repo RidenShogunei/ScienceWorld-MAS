@@ -4,6 +4,9 @@ An independent research project for hierarchical Main/Sub agent training in
 ScienceWorld. The initial supervised baseline uses the official expert
 trajectories released with Multi-Square.
 
+For a clean-machine setup and experiment-recording rules, see
+[`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md).
+
 ## Research Question
 
 Can executable environment feedback improve a hierarchical language-agent
@@ -91,6 +94,27 @@ They are diagnostics, not substitutes for full ScienceWorld episode success.
 
 The initial 128-sample pipeline check is documented in
 [`docs/SFT_PILOT_REPORT.md`](docs/SFT_PILOT_REPORT.md).
+The first executable environment rollout is documented in
+[`docs/ENVIRONMENT_SMOKE_REPORT.md`](docs/ENVIRONMENT_SMOKE_REPORT.md).
+
+## Environment Evaluation
+
+After training, run the actual hierarchical policy in ScienceWorld:
+
+```powershell
+python evaluate_environment.py `
+  --base-model Qwen/Qwen2.5-1.5B-Instruct `
+  --main-adapter artifacts/checkpoints/sft/main_agent/best `
+  --sub-adapter artifacts/checkpoints/sft/sub_agent/best `
+  --split dev `
+  --episodes 10
+```
+
+Before training or evaluation on a new machine:
+
+```powershell
+python doctor.py --smoke-environment
+```
 
 ## Current Milestone
 

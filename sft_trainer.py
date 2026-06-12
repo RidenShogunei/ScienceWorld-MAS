@@ -15,6 +15,8 @@ from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_tr
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from provenance import experiment_provenance
+
 
 def ensure_torch_set_submodule() -> None:
     """Backport torch.nn.Module.set_submodule for Transformers 5 on PyTorch 2.4."""
@@ -273,6 +275,25 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
         "best_val_perplexity": math.exp(min(best_val, 20)),
         "updates": update_step,
         "history": history,
+        "run_config": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "lr": args.lr,
+            "max_length": args.max_length,
+            "lora_r": args.lora_r,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "use_4bit": args.use_4bit,
+            "seed": args.seed,
+        },
+        "provenance": experiment_provenance(
+            {
+                "base_model": args.base_model,
+                "train_data": args.train_data,
+                "val_data": args.val_data,
+            }
+        ),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")

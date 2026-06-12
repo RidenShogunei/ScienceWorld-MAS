@@ -11,6 +11,7 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from provenance import experiment_provenance
 from sft_trainer import ensure_torch_set_submodule
 
 
@@ -140,7 +141,17 @@ def main() -> None:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(
-            json.dumps({"metrics": metrics, "examples": rows}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "metrics": metrics,
+                    "provenance": experiment_provenance(
+                        {"base_model": args.base_model, "adapter": args.adapter, "data": args.data}
+                    ),
+                    "examples": rows,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
