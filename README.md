@@ -101,6 +101,8 @@ The initial 128-sample pipeline check is documented in
 [`docs/SFT_PILOT_REPORT.md`](docs/SFT_PILOT_REPORT.md).
 The first executable environment rollout is documented in
 [`docs/ENVIRONMENT_SMOKE_REPORT.md`](docs/ENVIRONMENT_SMOKE_REPORT.md).
+The planned hierarchical reinforcement-learning structure is documented in
+[`docs/MGRPO_DESIGN.md`](docs/MGRPO_DESIGN.md).
 
 ## Environment Evaluation
 
