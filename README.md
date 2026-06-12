@@ -55,6 +55,43 @@ subtask but no corresponding reward/score/done label. The loader does not
 invent those labels: it drops only those eight unlabeled transitions and
 reports the count in `artifacts/data_audit.json`.
 
+## SFT Baseline
+
+Train independent LoRA adapters for the planner and executor:
+
+```powershell
+python sft_trainer.py `
+  --base-model Qwen/Qwen2.5-1.5B-Instruct `
+  --agents both `
+  --epochs 2 `
+  --use-4bit
+```
+
+Best validation-loss adapters are written to:
+
+```text
+artifacts/checkpoints/sft/main_agent/best
+artifacts/checkpoints/sft/sub_agent/best
+```
+
+Run held-out offline generation evaluation before installing ScienceWorld:
+
+```powershell
+python evaluate_sft.py `
+  --agent main `
+  --adapter artifacts/checkpoints/sft/main_agent/best
+
+python evaluate_sft.py `
+  --agent sub `
+  --adapter artifacts/checkpoints/sft/sub_agent/best
+```
+
+The offline metrics are strict format validity and normalized exact match.
+They are diagnostics, not substitutes for full ScienceWorld episode success.
+
+The initial 128-sample pipeline check is documented in
+[`docs/SFT_PILOT_REPORT.md`](docs/SFT_PILOT_REPORT.md).
+
 ## Current Milestone
 
 The first milestone is data validity, followed by:

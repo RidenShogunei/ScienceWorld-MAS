@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import torch
 
 from scienceworld_data import (
     assign_split,
@@ -9,6 +10,7 @@ from scienceworld_data import (
     parse_action_done,
     strip_embedded_instruction,
 )
+from sft_trainer import ensure_torch_set_submodule
 
 
 def test_parse_action_done():
@@ -60,3 +62,11 @@ def test_load_minimal_trajectories(tmp_path):
     assert high.subtasks == ["go kitchen"]
     assert high.observations[-1] == "terminal state"
     assert load_low_trajectories(low_path)[0].actions == ["go kitchen; True"]
+
+
+def test_set_submodule_compatibility():
+    ensure_torch_set_submodule()
+    root = torch.nn.Sequential(torch.nn.Sequential(torch.nn.Linear(2, 2)))
+    replacement = torch.nn.Linear(2, 1)
+    root.set_submodule("0.0", replacement)
+    assert root[0][0] is replacement
