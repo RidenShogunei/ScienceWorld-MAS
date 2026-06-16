@@ -7,3 +7,4 @@ accelerate>=1.0
 safetensors>=0.4
 bitsandbytes>=0.45
 pytest>=8.0
+openai>=1.0
