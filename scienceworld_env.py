@@ -43,6 +43,8 @@ class ScienceWorldRunner:
         observation, reward, done, info = self.env.step(action)
         return str(observation), float(reward), bool(done), dict(info), action in valid_actions
 
+    def valid_actions(self) -> list[str]:
+        return list(self.env.get_valid_action_object_combinations())
+
     def gold_actions(self) -> list[str]:
         return list(self.env.get_gold_action_sequence())
-

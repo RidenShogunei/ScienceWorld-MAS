@@ -105,6 +105,8 @@ The planned hierarchical reinforcement-learning structure is documented in
 [`docs/MGRPO_DESIGN.md`](docs/MGRPO_DESIGN.md).
 Contract-style Main/Sub communication distillation is documented in
 [`docs/CONTRACT_DISTILLATION.md`](docs/CONTRACT_DISTILLATION.md).
+Native Kimi Main/Sub environment rollout collection is documented in
+[`docs/NATIVE_KIMI_ROLLOUTS.md`](docs/NATIVE_KIMI_ROLLOUTS.md).
 
 ## Environment Evaluation
 
