@@ -48,6 +48,9 @@ the official expert action:
 The Kimi API is OpenAI Chat Completions compatible. The generator defaults to
 the documented base URL `https://api.moonshot.ai/v1` and reads the key from
 `MOONSHOT_API_KEY`. Do not commit API keys.
+If generation fails with `401 Invalid Authentication`, verify that the key is
+from the Moonshot/Kimi OpenAI-compatible Chat Completions platform and matches
+the selected API base URL.
 
 ```powershell
 $env:MOONSHOT_API_KEY = "..."

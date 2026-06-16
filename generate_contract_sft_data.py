@@ -221,6 +221,11 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> Communicati
             if args.failure_dir:
                 failure_path.parent.mkdir(parents=True, exist_ok=True)
                 failure_path.write_text(repr(exc), encoding="utf-8")
+            if exc.__class__.__name__ == "AuthenticationError":
+                raise RuntimeError(
+                    "Kimi authentication failed. Check that the key belongs to the "
+                    "Moonshot/Kimi OpenAI-compatible Chat Completions API."
+                ) from exc
             if attempt >= args.retries:
                 raise
             time.sleep(args.retry_sleep)
