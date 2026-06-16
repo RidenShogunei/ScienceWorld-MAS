@@ -21,7 +21,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model, prepare_model_for_kbit_training
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -205,15 +205,23 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     )
 
     model = load_model(args.base_model, args.use_4bit)
-    lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=args.target_modules,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-    )
-    model = get_peft_model(model, lora_config)
+    init_adapter = getattr(args, "init_adapter", None)
+    if category == "sub" and init_adapter:
+        init_path = Path(init_adapter)
+        if not init_path.exists():
+            raise FileNotFoundError(f"init adapter not found: {init_path}")
+        print(f"[{category}] loading adapter from {init_path}", flush=True)
+        model = PeftModel.from_pretrained(model, str(init_path), is_trainable=True)
+    else:
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=args.target_modules,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_config)
     if args.gradient_checkpointing:
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable()
@@ -324,6 +332,7 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
             "lora_alpha": args.lora_alpha,
             "lora_dropout": args.lora_dropout,
             "use_4bit": args.use_4bit,
+            "init_adapter": getattr(args, "init_adapter", None),
             "seed": args.seed,
         },
         "provenance": experiment_provenance(
@@ -348,6 +357,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-data", default="data/processed/val.jsonl")
     parser.add_argument("--save-dir", default="artifacts/checkpoints/sft")
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument(
+        "--init-adapter",
+        default=None,
+        help="Optional LoRA checkpoint to continue Sub training from",
+    )
     parser.add_argument("--agents", choices=("main", "sub", "both"), default="both")
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=8)

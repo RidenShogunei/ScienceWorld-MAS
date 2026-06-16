@@ -6,12 +6,19 @@ import argparse
 import json
 import random
 import re
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from eval_episodes import (
+    episode_list_metadata,
+    generate_stratified_episodes,
+    load_episode_list,
+    save_episode_list,
+)
 from generate_sft_data import MAIN_SYSTEM, SUB_SYSTEM
 from provenance import experiment_provenance
 from scienceworld_env import EpisodeSpec, ScienceWorldRunner
@@ -188,14 +195,64 @@ def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: Ep
     }
 
 
+def resolve_episode_specs(runner: ScienceWorldRunner, args) -> tuple[list[EpisodeSpec], dict | None]:
+    if args.write_episode_list:
+        specs = generate_stratified_episodes(
+            runner,
+            args.split,
+            args.k_per_task,
+            seed=args.seed,
+            task_names=args.tasks,
+        )
+        metadata = episode_list_metadata(
+            specs,
+            split=args.split,
+            seed=args.seed,
+            k_per_task=args.k_per_task,
+        )
+        save_episode_list(args.write_episode_list, specs, metadata)
+        print(
+            f"[eval] wrote {len(specs)} episodes "
+            f"({metadata.task_count} tasks × up to {args.k_per_task}) "
+            f"→ {args.write_episode_list}"
+        )
+        return specs, asdict(metadata)
+
+    if args.episode_list:
+        metadata, specs = load_episode_list(args.episode_list)
+        print(
+            f"[eval] loaded {len(specs)} fixed episodes "
+            f"({metadata.task_count} tasks, k={metadata.k_per_task}, seed={metadata.seed})"
+        )
+        return specs, asdict(metadata)
+
+    return choose_episodes(runner, args), None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-model", required=True)
-    parser.add_argument("--main-adapter", required=True)
-    parser.add_argument("--sub-adapter", required=True)
+    parser.add_argument("--base-model")
+    parser.add_argument("--main-adapter")
+    parser.add_argument("--sub-adapter")
     parser.add_argument("--split", choices=("train", "dev", "test"), default="dev")
     parser.add_argument("--tasks", nargs="*", default=None)
     parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument(
+        "--k-per-task",
+        type=int,
+        default=5,
+        help="For stratified lists: variations sampled per task type (default: 5).",
+    )
+    parser.add_argument(
+        "--episode-list",
+        default=None,
+        help="Fixed JSON episode list (e.g. artifacts/eval/dev_stratified_k5_seed123.json).",
+    )
+    parser.add_argument(
+        "--write-episode-list",
+        default=None,
+        help="Write a stratified episode list and exit (no model load).",
+    )
     parser.add_argument("--step-limit", type=int, default=50)
     parser.add_argument("--max-subtasks", type=int, default=15)
     parser.add_argument("--max-input-length", type=int, default=768)
@@ -204,15 +261,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-4bit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--output", default="artifacts/eval/environment_eval.json")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.write_episode_list:
+        return args
+    missing = [name for name in ("base_model", "main_adapter", "sub_adapter") if not getattr(args, name)]
+    if missing:
+        flag_names = ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+        parser.error(f"the following arguments are required: {flag_names}")
+    return args
 
 
 def main() -> None:
     args = parse_args()
-    policy = HierarchicalPolicy(args.base_model, args.main_adapter, args.sub_adapter, args.use_4bit)
     runner = ScienceWorldRunner(step_limit=args.step_limit)
+    episode_list_info: dict | None = None
     try:
-        specs = choose_episodes(runner, args)
+        specs, episode_list_info = resolve_episode_specs(runner, args)
+        if args.write_episode_list:
+            return
+
+        policy = HierarchicalPolicy(args.base_model, args.main_adapter, args.sub_adapter, args.use_4bit)
         episodes = []
         for index, spec in enumerate(specs, 1):
             print(f"[episode {index}/{len(specs)}] {spec.task_name} variation={spec.variation_id}")
@@ -239,6 +307,7 @@ def main() -> None:
             for key, value in vars(args).items()
             if key not in {"base_model", "main_adapter", "sub_adapter"}
         },
+        "episode_list": episode_list_info,
         "metrics": {
             "episodes": len(episodes),
             "success_rate": sum(item["success"] for item in episodes) / max(len(episodes), 1),

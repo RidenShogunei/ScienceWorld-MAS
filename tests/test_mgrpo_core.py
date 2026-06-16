@@ -6,6 +6,9 @@ from mgrpo_objective import add_reference_kl, clipped_policy_loss
 from rollout_schema import ActionStep, MainDecision, SubInvocation, SystemRollout
 from scienceworld_rewards import main_reward, sub_invocation_reward
 from trajectory_alignment import align_sub_invocations, group_relative_advantages
+from mgrpo_trainer import sample_iter_specs
+from rollout_schema import group_key
+from scienceworld_env import EpisodeSpec
 
 
 def make_step(
@@ -103,6 +106,38 @@ def test_rollout_round_trip():
     restored = SystemRollout.from_dict(rollout.to_dict())
     assert restored == rollout
     assert restored.action_steps[-1].score_delta == 100.0
+
+
+def test_group_key_includes_variation_id():
+    assert group_key("boil", 7, "dev") == "dev:boil:7"
+    assert group_key("boil", 0, "dev") != group_key("boil", 1, "dev")
+
+
+def test_sample_iter_specs_repeats_each_group():
+    pool = [
+        EpisodeSpec("task-a", 1, "dev"),
+        EpisodeSpec("task-b", 2, "dev"),
+        EpisodeSpec("task-c", 3, "dev"),
+    ]
+    specs = sample_iter_specs(pool, groups=2, group_size=4, seed=1)
+    assert len(specs) == 8
+    from collections import Counter
+
+    counts = Counter(group_key(s.task_name, s.variation_id, s.split) for s in specs)
+    assert len(counts) == 2
+    assert all(value == 4 for value in counts.values())
+
+
+def test_group_advantages_are_nonzero_with_repeated_query_rollouts():
+    rollouts = [
+        make_rollout("a", 0.0),
+        make_rollout("b", 50.0),
+        make_rollout("c", 100.0),
+    ]
+    advantages = group_relative_advantages(rollouts, lambda item: item.final_score)
+    assert advantages["a"] < 0
+    assert advantages["c"] > 0
+    assert any(abs(value) > 1e-6 for value in advantages.values())
 
 
 def test_group_advantages_are_query_relative():

@@ -67,6 +67,24 @@ class _NoContext:
 # Policy wrapper
 # ---------------------------------------------------------------------------
 
+def configure_adapter_training(model, train_adapter: str | None) -> int:
+    """Enable gradients only for LoRA weights belonging to `train_adapter`.
+
+    When `train_adapter` is None (joint training), all LoRA params train.
+    Returns the number of trainable parameters.
+    """
+    for name, param in model.named_parameters():
+        if "lora" not in name.lower():
+            param.requires_grad = False
+            continue
+        if train_adapter is None:
+            param.requires_grad = True
+        else:
+            # PEFT multi-adapter names look like ...lora_A.main.weight
+            param.requires_grad = f".{train_adapter}." in name
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 class MGRPOPolicy:
     """Load base model + two LoRA adapters.  Provide log-prob-aware generation."""
 
@@ -87,7 +105,7 @@ class MGRPOPolicy:
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             )
-            kwargs["device_map"] = "auto"
+            kwargs["device_map"] = {"": "cuda:0"}
         else:
             kwargs["dtype"] = torch.bfloat16 if torch.cuda.device_count() > 0 else torch.float32
 
@@ -96,12 +114,6 @@ class MGRPOPolicy:
 
         model = PeftModel.from_pretrained(base, main_adapter, adapter_name="main")
         model.load_adapter(sub_adapter, adapter_name="sub")
-
-        for n, p in model.named_parameters():
-            p.requires_grad = "lora" in n.lower()
-        if freeze:
-            for p in model.parameters():
-                p.requires_grad = False
 
         model.eval()
         if torch.cuda.device_count() > 0 and not use_4bit:
@@ -117,6 +129,10 @@ class MGRPOPolicy:
     def generate_with_logprobs(
         self, adapter: str, messages: list[dict],
         max_input_length: int, max_new_tokens: int,
+        *,
+        do_sample: bool = True,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
     ) -> tuple[str, list[int], list[float]]:
         """Generate → return (text, token_ids, old_logprobs)."""
         self.model.set_adapter(adapter)
@@ -128,13 +144,20 @@ class MGRPOPolicy:
         ).to(self.device)
         prompt_len = inputs["input_ids"].shape[1]
 
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "return_dict_in_generate": True,
+            "output_scores": True,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = max(temperature, 1e-5)
+            gen_kwargs["top_p"] = top_p
+
         with torch.no_grad():
-            gen = self.model.generate(
-                **inputs, do_sample=False, max_new_tokens=max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                return_dict_in_generate=True, output_scores=True,
-            )
+            gen = self.model.generate(**inputs, **gen_kwargs)
         completion_ids = gen.sequences[0, prompt_len:].tolist()
         scores = torch.stack(gen.scores, dim=0)[:, 0, :]
         lp_matrix = torch.log_softmax(scores, dim=-1)
@@ -201,6 +224,9 @@ def run_rollout(
         ]
         raw, cids, olp = policy.generate_with_logprobs(
             "main", msgs, args.max_input_length, args.main_max_new_tokens,
+            do_sample=args.rollout_do_sample,
+            temperature=args.rollout_temperature,
+            top_p=args.rollout_top_p,
         )
         m = MAIN_PATTERN.search(raw)
         subtask = m.group(1).strip() if m else None
@@ -230,6 +256,9 @@ def run_rollout(
             ]
             raw, cids, olp = policy.generate_with_logprobs(
                 "sub", sub_msgs, args.max_input_length, args.sub_max_new_tokens,
+                do_sample=args.rollout_do_sample,
+                temperature=args.rollout_temperature,
+                top_p=args.rollout_top_p,
             )
             m = SUB_PATTERN.search(raw)
             act = m.group(1).strip() if m else None
@@ -272,9 +301,41 @@ def run_rollout(
 # Training step
 # ---------------------------------------------------------------------------
 
+def collect_main_training_samples(
+    rollouts: list[SystemRollout], rewards: dict[str, float],
+) -> list[tuple[list[int], list[float], float, list[dict]]]:
+    samples: list[tuple[list[int], list[float], float, list[dict]]] = []
+    for rollout in rollouts:
+        advantage = rewards[rollout.rollout_id]
+        for dec in rollout.main_decisions:
+            if dec.completion_token_ids and dec.old_logprobs:
+                samples.append((
+                    dec.completion_token_ids.copy(), dec.old_logprobs.copy(),
+                    advantage, dec.prompt_messages,
+                ))
+    return samples
+
+
+def collect_sub_training_samples(
+    sub_records,
+) -> list[tuple[list[int], list[float], float, list[dict]]]:
+    """Collect per-invocation Sub samples with slot-level advantages."""
+    samples: list[tuple[list[int], list[float], float, list[dict]]] = []
+    for record in sub_records:
+        if record.loss_mask <= 0 or record.invocation is None:
+            continue
+        for step in record.invocation.steps:
+            if step.completion_token_ids and step.old_logprobs:
+                samples.append((
+                    step.completion_token_ids.copy(), step.old_logprobs.copy(),
+                    record.advantage, step.prompt_messages,
+                ))
+    return samples
+
+
 def train_step(
     policy: MGRPOPolicy, adapter: str,
-    rollouts: list[SystemRollout], rewards: dict[str, float],
+    samples: list[tuple[list[int], list[float], float, list[dict]]],
     args: argparse.Namespace,
 ) -> dict[str, float]:
     """One GRPO policy update.  Processes completions one-at-a-time
@@ -290,32 +351,20 @@ def train_step(
         print(f"[mgrpo] Initialized AdamW for {adapter} adapter ({len(trainable)} params, lr={args.lr})")
     optimizer = policy._optimizers[adapter]
 
-    # Collect samples
-    samples: list[tuple[list[int], list[float], float, list[dict]]] = []
-    for rollout in rollouts:
-        advantage = rewards[rollout.rollout_id]
-        if adapter == "main":
-            for dec in rollout.main_decisions:
-                if dec.completion_token_ids and dec.old_logprobs:
-                    samples.append((
-                        dec.completion_token_ids.copy(), dec.old_logprobs.copy(),
-                        advantage, dec.prompt_messages,
-                    ))
-        else:
-            for inv in rollout.sub_invocations:
-                for step in inv.steps:
-                    if step.completion_token_ids and step.old_logprobs:
-                        samples.append((
-                            step.completion_token_ids.copy(), step.old_logprobs.copy(),
-                            advantage, step.prompt_messages,
-                        ))
-
     if not samples:
-        return {"loss": 0.0, "n_samples": 0}
+        return {"loss": 0.0, "n_samples": 0, "approx_kl": 0.0, "clip_fraction": 0.0, "grad_norm": 0.0}
 
     # Log reward statistics for debugging
     adv_values = [s[2] for s in samples]
-    print(f"  [debug] {adapter} samples={len(samples)} adv_min={min(adv_values):.4f} adv_max={max(adv_values):.4f} adv_mean={sum(adv_values)/len(adv_values):.4f}")
+    nonzero_adv = sum(1 for value in adv_values if abs(value) > 1e-8)
+    print(
+        f"  [debug] {adapter} samples={len(samples)} "
+        f"adv_min={min(adv_values):.4f} adv_max={max(adv_values):.4f} "
+        f"adv_mean={sum(adv_values)/len(adv_values):.4f} "
+        f"adv_nonzero={nonzero_adv}/{len(adv_values)}"
+    )
+    if nonzero_adv == 0:
+        print(f"  [warn] {adapter} update has zero non-zero advantages; loss will be ~0")
 
     max_input = args.max_input_length
     max_comp = args.max_completion_tokens
@@ -348,7 +397,7 @@ def train_step(
         n += 1
 
     if n == 0:
-        return {"loss": 0.0, "n_samples": 0}
+        return {"loss": 0.0, "n_samples": 0, "approx_kl": 0.0, "clip_fraction": 0.0, "grad_norm": 0.0}
 
     grad_norm = torch.nn.utils.clip_grad_norm_(
         [p for p in policy.model.parameters() if p.requires_grad],
@@ -374,6 +423,58 @@ def train_step(
 # Main loop
 # ---------------------------------------------------------------------------
 
+def sample_iter_specs(
+    specs_pool: list[EpisodeSpec],
+    *,
+    groups: int,
+    group_size: int,
+    seed: int,
+) -> list[EpisodeSpec]:
+    """Sample GRPO groups: `groups` unique queries, each repeated `group_size` times."""
+    if group_size <= 0:
+        raise ValueError("group_size must be positive")
+    if not specs_pool:
+        return []
+
+    rng = random.Random(seed)
+    unique_specs = specs_pool[:]
+    rng.shuffle(unique_specs)
+    num_groups = min(groups, len(unique_specs))
+    if num_groups == 0:
+        return []
+
+    selected = unique_specs[:num_groups]
+    iter_specs: list[EpisodeSpec] = []
+    for spec in selected:
+        iter_specs.extend([spec] * group_size)
+    rng.shuffle(iter_specs)
+    return iter_specs
+
+
+def _log_group_advantage_stats(batch) -> None:
+    from collections import defaultdict
+
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for record in batch.main_records:
+        grouped[record.group_key].append(record.advantage)
+    zero_std_groups = 0
+    for key, advantages in grouped.items():
+        mean = sum(advantages) / len(advantages)
+        variance = sum((value - mean) ** 2 for value in advantages) / len(advantages)
+        std = math.sqrt(variance)
+        if std <= 1e-6:
+            zero_std_groups += 1
+        print(
+            f"  [debug] group {key}: rollouts={len(advantages)} "
+            f"adv_std={std:.4f} adv=[{min(advantages):.3f}, {max(advantages):.3f}]"
+        )
+    if zero_std_groups:
+        print(
+            f"  [warn] {zero_std_groups}/{len(grouped)} groups have zero advantage spread; "
+            "check rollout sampling and stochastic generation"
+        )
+
+
 def train_mgrpo(args: argparse.Namespace) -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -388,6 +489,16 @@ def train_mgrpo(args: argparse.Namespace) -> None:
         main_src = args.main_adapter
         sub_src = args.sub_adapter
     policy = MGRPOPolicy(args.base_model, main_src, sub_src, args.use_4bit)
+
+    if args.agents == "sub":
+        n = configure_adapter_training(policy.model, "sub")
+        print(f"[mgrpo] frozen Main — training Sub adapter only ({n} params)")
+    elif args.agents == "main":
+        n = configure_adapter_training(policy.model, "main")
+        print(f"[mgrpo] frozen Sub — training Main adapter only ({n} params)")
+    else:
+        n = configure_adapter_training(policy.model, None)
+        print(f"[mgrpo] joint training — Main + Sub ({n} params)")
 
     runner = ScienceWorldRunner(step_limit=args.step_limit)
     specs_pool = _build_spec_pool(runner, args)
@@ -407,24 +518,22 @@ def train_mgrpo(args: argparse.Namespace) -> None:
             print(f"[mgrpo] iteration {global_iter} (run {local_iter}/{args.iterations})")
             print(f"{'='*60}")
 
-            # Sample specs for this iteration
-            rng = random.Random(args.seed + global_iter)
-            g = min(args.groups, len(specs_pool) // args.group_size)
-            candidates = specs_pool[:]
-            rng.shuffle(candidates)
-            iter_specs = []
-            groups_seen: set[str] = set()
-            for s in candidates:
-                gk = group_key(s.task_name, s.variation_id, s.split)
-                if gk not in groups_seen:
-                    groups_seen.add(gk)
-                    iter_specs.append(s)
-                    if len(iter_specs) >= g * args.group_size:
-                        break
+            # Sample specs for this iteration: G groups × group_size rollouts each
+            iter_specs = sample_iter_specs(
+                specs_pool,
+                groups=args.groups,
+                group_size=args.group_size,
+                seed=args.seed + global_iter,
+            )
 
             if len(iter_specs) < args.group_size:
                 print(f"[mgrpo] only {len(iter_specs)} specs — skipping")
                 continue
+
+            print(
+                f"[mgrpo] sampled {len(iter_specs)} rollouts "
+                f"({len(iter_specs) // args.group_size} groups × {args.group_size})"
+            )
 
             # ---- Rollout ----
             print(f"[mgrpo] collecting {len(iter_specs)} rollouts ...")
@@ -437,40 +546,44 @@ def train_mgrpo(args: argparse.Namespace) -> None:
                 print(f"score={rollout.final_score:.1f} steps={len(rollout.action_steps)}")
 
             # ---- Build batch ----
+            rw = RewardWeights(strict_format_gate=False)
+            if args.reward_action_validity is not None:
+                rw = RewardWeights(
+                    global_score=rw.global_score,
+                    progress=rw.progress,
+                    format_validity=rw.format_validity,
+                    action_validity=args.reward_action_validity,
+                    no_progress_penalty=rw.no_progress_penalty,
+                    repetition_penalty=rw.repetition_penalty,
+                    premature_done_penalty=rw.premature_done_penalty,
+                    strict_format_gate=False,
+                )
             batch = build_mgrpo_batch(
                 rollouts, args.target_invocations,
                 seed=args.seed + global_iter,
-                reward_weights=RewardWeights(),
+                reward_weights=rw,
                 epsilon=args.epsilon,
             )
+            _log_group_advantage_stats(batch)
 
     # ---- Train Main ----
             if args.agents in ("main", "both"):
                 main_rewards = {r.rollout_id: r.advantage for r in batch.main_records}
                 if main_rewards:
                     print(f"\n[mgrpo] Main update ({len(main_rewards)} rollouts) ...")
-                    # Debug: print reward stats
                     mr_vals = list(main_rewards.values())
-                    print(f"  [debug] Main rewards: min={min(mr_vals):.4f} max={max(mr_vals):.4f} mean={sum(mr_vals)/len(mr_vals):.4f}")
-                    metrics = train_step(policy, "main", rollouts, main_rewards, args)
+                    print(f"  [debug] Main advantages: min={min(mr_vals):.4f} max={max(mr_vals):.4f} mean={sum(mr_vals)/len(mr_vals):.4f}")
+                    main_samples = collect_main_training_samples(rollouts, main_rewards)
+                    metrics = train_step(policy, "main", main_samples, args)
                     print(f"  loss={metrics['loss']:.4f} kl={metrics['approx_kl']:.4f} "
                           f"samples={metrics['n_samples']} clip={metrics['clip_fraction']:.2%}")
 
             # ---- Train Sub ----
             if args.agents in ("sub", "both"):
-                sub_rewards: dict[str, list[tuple[float, bool]]] = {}
-                for r in batch.sub_records:
-                    sub_rewards.setdefault(r.rollout_id, []).append((r.advantage, r.loss_mask > 0))
-                sub_avg = {
-                    rid: sum(a for a, _ in items) / max(sum(1 for _, m in items if m), 1)
-                    for rid, items in sub_rewards.items()
-                }
-                if sub_avg:
-                    print(f"[mgrpo] Sub update ({len(sub_avg)} rollouts) ...")
-                    # Debug: print reward stats
-                    sr_vals = list(sub_avg.values())
-                    print(f"  [debug] Sub rewards: min={min(sr_vals):.4f} max={max(sr_vals):.4f} mean={sum(sr_vals)/len(sr_vals):.4f}")
-                    metrics = train_step(policy, "sub", rollouts, sub_avg, args)
+                sub_samples = collect_sub_training_samples(batch.sub_records)
+                if sub_samples:
+                    print(f"[mgrpo] Sub update ({len(sub_samples)} token samples) ...")
+                    metrics = train_step(policy, "sub", sub_samples, args)
                     print(f"  loss={metrics['loss']:.4f} kl={metrics['approx_kl']:.4f} "
                           f"samples={metrics['n_samples']} clip={metrics['clip_fraction']:.2%}")
 
@@ -521,6 +634,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-completion-tokens", type=int, default=64)
     p.add_argument("--main-max-new-tokens", type=int, default=64)
     p.add_argument("--sub-max-new-tokens", type=int, default=64)
+    p.add_argument("--rollout-do-sample", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--rollout-temperature", type=float, default=0.7)
+    p.add_argument("--rollout-top-p", type=float, default=0.9)
     p.add_argument("--use-4bit", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--clip-low", type=float, default=0.2)
@@ -530,6 +646,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reference-model", default=None, help="Path to SFT reference model for KL penalty (defaults to base model)")
     p.add_argument("--epsilon", type=float, default=1e-6)
     p.add_argument("--save-dir", default="artifacts/checkpoints/mgrpo")
+    p.add_argument("--reward-action-validity", type=float, default=None,
+                   help="Override RewardWeights.action_validity (e.g. 0.3 for Sub-only RL)")
     p.add_argument("--seed", type=int, default=123)
     args = p.parse_args()
     if not args.resume and not (args.main_adapter and args.sub_adapter):
