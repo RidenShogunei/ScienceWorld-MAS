@@ -46,7 +46,9 @@ DISTILL_SYSTEM = (
     "contracts. Return only strict JSON with keys: goal, subgoal, rationale, target_objects, "
     "location_hint, required_tools, success_condition, action_guidance, fallback_if_blocked. "
     "The fields target_objects, required_tools, and action_guidance must be JSON arrays of strings. "
-    "Do not invent the expert action label; action_guidance may summarize valid action styles."
+    "The action_guidance array must begin with every expert action string exactly as provided, "
+    "in the same order. You may append short extra guidance after those exact strings. "
+    "Do not invent or rewrite expert action labels."
 )
 
 
@@ -225,6 +227,33 @@ def distill_contract_with_kimicode_cli(
     return parse_contract_text(extract_first_json_object(content))
 
 
+def align_contract_to_expert_actions(
+    contract: CommunicationContract,
+    expert_actions: list[str],
+) -> CommunicationContract:
+    """Keep Kimi's rich fields but force action guidance onto official labels."""
+    extras = []
+    expert_lower = [action.lower() for action in expert_actions]
+    for item in contract.action_guidance:
+        normalized = item.lower()
+        if normalized in expert_lower:
+            continue
+        if any(action in normalized or normalized in action for action in expert_lower):
+            continue
+        extras.append(item)
+    return CommunicationContract(
+        goal=contract.goal,
+        subgoal=contract.subgoal,
+        rationale=contract.rationale,
+        target_objects=contract.target_objects,
+        location_hint=contract.location_hint,
+        required_tools=contract.required_tools,
+        success_condition=contract.success_condition,
+        action_guidance=[*expert_actions, *extras],
+        fallback_if_blocked=contract.fallback_if_blocked,
+    )
+
+
 def build_main_sample(step: ExpertStep, contract: CommunicationContract) -> dict:
     return {
         "messages": [
@@ -280,7 +309,8 @@ def build_sub_samples(step: ExpertStep, contract: CommunicationContract) -> list
 def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> CommunicationContract:
     cache_path = Path(args.cache_dir) / f"{step.source_index}_{step.step_index}.json"
     if args.cache_dir and cache_path.exists():
-        return parse_contract_text(cache_path.read_text(encoding="utf-8"))
+        contract = parse_contract_text(cache_path.read_text(encoding="utf-8"))
+        return align_contract_to_expert_actions(contract, step.expert_actions)
 
     if args.provider == "mock":
         contract = build_mock_contract(
@@ -304,6 +334,7 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> Communicati
                 contract = distill_contract_with_kimicode_cli(step, args)
             else:
                 raise ValueError(f"unsupported provider: {args.provider}")
+            contract = align_contract_to_expert_actions(contract, step.expert_actions)
             if args.cache_dir:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(

@@ -2,6 +2,7 @@ import json
 
 from contract_schema import build_mock_contract, parse_contract_text
 from generate_contract_sft_data import (
+    align_contract_to_expert_actions,
     build_main_sample,
     build_sub_samples,
     extract_first_json_object,
@@ -96,3 +97,29 @@ def test_extract_first_json_object_from_agent_output():
         "goal": "g",
         "action_guidance": ["look"],
     }
+
+
+def test_align_contract_to_expert_actions_forces_official_prefix():
+    contract = build_mock_contract(
+        task="Boil water",
+        subtask="Heat water",
+        expert_actions=["move the pot to stove", "turn on stove"],
+        observation="kitchen",
+    )
+    noisy = type(contract)(
+        goal=contract.goal,
+        subgoal=contract.subgoal,
+        rationale=contract.rationale,
+        target_objects=contract.target_objects,
+        location_hint=contract.location_hint,
+        required_tools=contract.required_tools,
+        success_condition=contract.success_condition,
+        action_guidance=["move the pot to stove carefully", "turn on the stove", "watch temperature"],
+        fallback_if_blocked=contract.fallback_if_blocked,
+    )
+    aligned = align_contract_to_expert_actions(
+        noisy,
+        ["move metal pot to stove", "activate stove"],
+    )
+    assert aligned.action_guidance[:2] == ["move metal pot to stove", "activate stove"]
+    assert "watch temperature" in aligned.action_guidance

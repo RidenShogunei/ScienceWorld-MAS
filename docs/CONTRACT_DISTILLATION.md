@@ -104,3 +104,21 @@ Each distilled contract is cached by `(source_index, trajectory_step)` under
 `artifacts/contract_distill_cache` by default. Re-running the command reuses
 cached contracts and avoids duplicate API cost. Validation failures are written
 to `artifacts/contract_distill_failures` for inspection.
+
+## Quality Audit
+
+Run the audit before using a generated batch for SFT:
+
+```powershell
+python audit_contract_sft.py `
+  --input-dir data/contract_sft_kimicode_100 `
+  --output artifacts/contract_sft_kimicode_100_audit.json
+```
+
+Important fields:
+
+- `parse_ok_rate`: generated contracts are valid JSON/schema.
+- `field_nonempty_rate`: required communication fields are populated.
+- `exact_expert_action_prefix_rate`: `action_guidance` begins with official
+  expert actions exactly. This should be `1.0`; the generator also enforces it
+  during post-processing.
