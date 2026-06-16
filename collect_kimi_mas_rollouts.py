@@ -7,6 +7,7 @@ and Sub action while interacting with the live environment.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import random
@@ -81,10 +82,90 @@ def parse_sub_response(text: str) -> tuple[str | None, bool, bool]:
     return match.group(1).strip(), match.group(2).lower() == "true", True
 
 
-def format_valid_actions(actions: list[str], max_actions: int, max_chars: int) -> str:
+def snap_action_to_valid(action: str | None, valid_actions: list[str], threshold: float) -> str | None:
+    if not action:
+        return action
+    valid_set = set(valid_actions)
+    if action in valid_set:
+        return action
+    normalized_action = action.lower().strip()
+    by_lower = {candidate.lower().strip(): candidate for candidate in valid_actions}
+    if normalized_action in by_lower:
+        return by_lower[normalized_action]
+
+    source_is_graph_action = normalized_action.startswith("connect ") or normalized_action.startswith("disconnect ")
+    candidates = []
+    for candidate in valid_actions:
+        normalized_candidate = candidate.lower()
+        candidate_is_graph_action = normalized_candidate.startswith("connect ") or normalized_candidate.startswith("disconnect ")
+        if candidate_is_graph_action and not source_is_graph_action:
+            continue
+        candidates.append(candidate)
+    if not candidates:
+        candidates = valid_actions
+
+    best_action = None
+    best_score = 0.0
+    for candidate in candidates:
+        score = difflib.SequenceMatcher(None, normalized_action, candidate.lower()).ratio()
+        if score > best_score:
+            best_action = candidate
+            best_score = score
+    if best_action is not None and best_score >= threshold:
+        return best_action
+    return action
+
+
+PREFERRED_ACTION_PREFIXES = (
+    "look",
+    "inventory",
+    "open",
+    "close",
+    "go",
+    "pick up",
+    "move",
+    "activate",
+    "deactivate",
+    "examine",
+    "focus",
+    "use",
+    "pour",
+    "put",
+    "wait",
+)
+
+
+def action_rank(action: str, context: str = "") -> tuple[int, int, str]:
+    normalized = action.lower()
+    context_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9_]+", context.lower())
+        if len(token) >= 3
+    }
+    action_tokens = set(re.findall(r"[a-z0-9_]+", normalized))
+    overlap = len(context_tokens & action_tokens)
+    preferred = any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in PREFERRED_ACTION_PREFIXES)
+    graph_action = normalized.startswith("connect ") or normalized.startswith("disconnect ")
+    priority = 0
+    if graph_action:
+        priority += 4
+    if not preferred:
+        priority += 2
+    if normalized == "look around":
+        priority -= 1
+    return (priority, -overlap, normalized)
+
+
+def format_valid_actions(
+    actions: list[str],
+    max_actions: int,
+    max_chars: int,
+    context: str = "",
+) -> str:
     selected = []
     total = 0
-    for action in sorted(actions)[:max_actions]:
+    ranked = sorted(actions, key=lambda action: action_rank(action, context))
+    for action in ranked[:max_actions]:
         line = f"- {action}"
         if total + len(line) + 1 > max_chars:
             break
@@ -123,15 +204,18 @@ class KimiCodeClient:
         )
 
     def prompt(self, text: str) -> str:
-        completed = subprocess.run(
-            [self.cli_path, "-p", text, "--output-format", "stream-json"],
-            check=False,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            env=self.env,
-            timeout=self.timeout,
-        )
+        try:
+            completed = subprocess.run(
+                [self.cli_path, "-p", text, "--output-format", "stream-json"],
+                check=False,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                env=self.env,
+                timeout=self.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Kimi Code CLI timed out after {self.timeout:.1f}s") from exc
         if completed.returncode != 0:
             raise RuntimeError(
                 f"Kimi Code CLI failed with exit code {completed.returncode}: "
@@ -163,7 +247,13 @@ def sub_user_content(
     valid_actions: list[str],
     args: argparse.Namespace,
 ) -> str:
-    valid_text = format_valid_actions(valid_actions, args.max_valid_actions, args.max_valid_action_chars)
+    context = contract.to_tagged_json() + "\n" + observation
+    valid_text = format_valid_actions(
+        valid_actions,
+        args.max_valid_actions,
+        args.max_valid_action_chars,
+        context,
+    )
     return (
         f"Contract:\n{contract.to_tagged_json()}\n\n"
         f"Observation:\n{observation}\n\n"
@@ -186,7 +276,12 @@ def sub_prompt(
 
 
 def repair_prompt(raw: str, observation: str, valid_actions: list[str], args: argparse.Namespace) -> str:
-    valid_text = format_valid_actions(valid_actions, args.max_valid_actions, args.max_valid_action_chars)
+    valid_text = format_valid_actions(
+        valid_actions,
+        args.max_valid_actions,
+        args.max_valid_action_chars,
+        observation,
+    )
     return (
         "Repair the ScienceWorld executor response. Return only "
         "[action]...[/action][subtask_done]true|false[/subtask_done]. "
@@ -273,6 +368,17 @@ def run_episode(
             action, declared_done, format_valid = parse_sub_response(sub_raw)
 
             action_valid_precheck = action in set(valid_actions) if action else False
+            if (
+                args.snap_invalid_actions
+                and format_valid
+                and action is not None
+                and not action_valid_precheck
+            ):
+                snapped = snap_action_to_valid(action, valid_actions, args.snap_threshold)
+                if snapped != action:
+                    action = snapped
+                    action_valid_precheck = action in set(valid_actions)
+
             if args.repair_invalid_actions and (not format_valid or not action_valid_precheck):
                 repair_raw = agent.prompt(repair_prompt(sub_raw, observation, valid_actions, args))
                 repaired_action, repaired_done, repaired_format = parse_sub_response(repair_raw)
@@ -335,6 +441,12 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def summarize(rollouts: list[SystemRollout]) -> dict[str, float]:
     steps = [step for rollout in rollouts for step in rollout.action_steps]
     return {
@@ -362,6 +474,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-valid-actions", type=int, default=200)
     parser.add_argument("--max-valid-action-chars", type=int, default=12000)
     parser.add_argument("--repair-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--snap-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--snap-threshold", type=float, default=0.72)
     parser.add_argument("--kimicode-model", default="kimi-for-coding")
     parser.add_argument("--kimicode-base-url", default="https://api.kimi.com/coding/v1")
     parser.add_argument("--kimicode-provider-type", default="kimi")
@@ -380,21 +494,35 @@ def main() -> None:
     agent = KimiCodeClient(args)
     runner = ScienceWorldRunner(step_limit=args.step_limit)
     rollouts: list[SystemRollout] = []
+    errors: list[dict[str, Any]] = []
+    output = Path(args.output)
+    if output.exists():
+        output.unlink()
     try:
         specs = choose_episodes(runner, args)
         for index, spec in enumerate(specs, 1):
             print(f"[kimi-mas] episode {index}/{len(specs)} {spec.task_name} var={spec.variation_id}")
-            rollout = run_episode(agent, runner, spec, args, rollout_id=f"kimi_native_{index:04d}")
-            rollouts.append(rollout)
-            print(
-                f"  score={rollout.final_score:.1f} steps={len(rollout.action_steps)} "
-                f"success={rollout.success}"
-            )
+            try:
+                rollout = run_episode(agent, runner, spec, args, rollout_id=f"kimi_native_{index:04d}")
+                rollouts.append(rollout)
+                append_jsonl(output, rollout.to_dict())
+                print(
+                    f"  score={rollout.final_score:.1f} steps={len(rollout.action_steps)} "
+                    f"success={rollout.success}"
+                )
+            except Exception as exc:
+                error = {
+                    "episode_index": index,
+                    "task_name": spec.task_name,
+                    "variation_id": spec.variation_id,
+                    "split": spec.split,
+                    "error": repr(exc),
+                }
+                errors.append(error)
+                print(f"  failed: {exc}")
     finally:
         runner.close()
 
-    output = Path(args.output)
-    write_jsonl(output, [rollout.to_dict() for rollout in rollouts])
     report = {
         "config": {
             key: value
@@ -402,6 +530,7 @@ def main() -> None:
             if key not in {"kimicode_cli_path"}
         },
         "metrics": summarize(rollouts),
+        "errors": errors,
     }
     report_output = Path(args.report_output)
     report_output.parent.mkdir(parents=True, exist_ok=True)

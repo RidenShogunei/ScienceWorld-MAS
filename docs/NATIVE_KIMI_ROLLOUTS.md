@@ -34,6 +34,10 @@ python collect_kimi_mas_rollouts.py `
 The collector provides the current valid ScienceWorld actions to the Sub agent
 and can perform one repair call when the Sub output is malformed or not in the
 valid action set.
+Valid actions are ranked so task-like commands (`open`, `go`, `pick up`,
+`move`, `activate`, `examine`, etc.) appear before graph-style
+`connect`/`disconnect` commands. Near-miss actions can be snapped to a valid
+action, but task-like actions are not snapped into graph-style commands.
 
 ## Convert To SFT
 

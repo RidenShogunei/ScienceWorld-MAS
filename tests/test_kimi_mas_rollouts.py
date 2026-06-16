@@ -2,6 +2,7 @@ from collect_kimi_mas_rollouts import (
     format_valid_actions,
     parse_contract_response,
     parse_sub_response,
+    snap_action_to_valid,
 )
 
 
@@ -38,3 +39,45 @@ def test_format_valid_actions_limits_count_and_chars():
     assert "- a" in text
     assert "- long action name" in text
     assert "truncated" in text
+
+
+def test_format_valid_actions_prioritizes_task_actions_over_graph_actions():
+    text = format_valid_actions(
+        [
+            "connect air to cupboard",
+            "open cupboard",
+            "go to kitchen",
+            "disconnect door",
+            "pick up thermometer",
+        ],
+        max_actions=3,
+        max_chars=200,
+        context="Need to open the cupboard and pick up the thermometer.",
+    )
+    lines = text.splitlines()[:3]
+    assert "- open cupboard" in lines
+    assert "- pick up thermometer" in lines
+    assert not any("connect air" in line for line in lines)
+
+
+def test_snap_action_to_valid_maps_near_miss():
+    assert (
+        snap_action_to_valid(
+            "open large cupboard",
+            ["open cupboard", "look around", "go to hallway"],
+            threshold=0.7,
+        )
+        == "open cupboard"
+    )
+    assert snap_action_to_valid("totally unrelated", ["look around"], threshold=0.9) == "totally unrelated"
+
+
+def test_snap_action_to_valid_does_not_map_task_action_to_graph_action():
+    assert (
+        snap_action_to_valid(
+            "open door to hallway",
+            ["connect door to hallway", "look around"],
+            threshold=0.7,
+        )
+        == "open door to hallway"
+    )
