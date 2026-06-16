@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -43,6 +45,7 @@ DISTILL_SYSTEM = (
     "You convert ScienceWorld expert trajectories into grounded Main-to-Sub communication "
     "contracts. Return only strict JSON with keys: goal, subgoal, rationale, target_objects, "
     "location_hint, required_tools, success_condition, action_guidance, fallback_if_blocked. "
+    "The fields target_objects, required_tools, and action_guidance must be JSON arrays of strings. "
     "Do not invent the expert action label; action_guidance may summarize valid action styles."
 )
 
@@ -135,6 +138,93 @@ def distill_contract_with_kimi(step: ExpertStep, args: argparse.Namespace) -> Co
     return parse_contract_text(content)
 
 
+def extract_first_json_object(text: str) -> str:
+    """Return the first balanced JSON object embedded in CLI output."""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            _, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        return text[index : index + end]
+    raise ValueError("no JSON object found in Kimi Code CLI output")
+
+
+def _assistant_content_from_stream_json(stdout: str) -> str:
+    chunks = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            chunks.append(line)
+            continue
+        if event.get("role") == "assistant" and event.get("content"):
+            chunks.append(str(event["content"]))
+    return "\n".join(chunks) if chunks else stdout
+
+
+def distill_contract_with_kimicode_cli(
+    step: ExpertStep,
+    args: argparse.Namespace,
+) -> CommunicationContract:
+    api_key = os.environ.get(args.kimicode_api_key_env)
+    if not api_key:
+        raise RuntimeError(f"Missing API key environment variable: {args.kimicode_api_key_env}")
+
+    cli_path = args.kimicode_cli_path or shutil.which("kimi")
+    if not cli_path:
+        default_path = Path.home() / ".kimi-code" / "bin" / "kimi.exe"
+        if default_path.exists():
+            cli_path = str(default_path)
+    if not cli_path:
+        raise RuntimeError("Kimi Code CLI not found. Install it or pass --kimicode-cli-path.")
+
+    user_prompt = {
+        "task": step.task,
+        "planner_observation": step.observation,
+        "expert_subtask": step.subtask,
+        "expert_actions": step.expert_actions,
+        "executor_observations": step.low_observations[:3],
+    }
+    prompt = (
+        "You are a JSON API for ScienceWorld contract distillation.\n"
+        f"{DISTILL_SYSTEM}\n"
+        "Return one strict JSON object only. Do not use markdown. Do not explain.\n\n"
+        f"Input:\n{json.dumps(user_prompt, ensure_ascii=False)}"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "KIMI_MODEL_NAME": args.kimicode_model,
+            "KIMI_MODEL_API_KEY": api_key,
+            "KIMI_MODEL_PROVIDER_TYPE": args.kimicode_provider_type,
+            "KIMI_MODEL_BASE_URL": args.kimicode_base_url,
+            "KIMI_MODEL_TEMPERATURE": str(args.temperature),
+            "KIMI_DISABLE_TELEMETRY": "1",
+        }
+    )
+    completed = subprocess.run(
+        [cli_path, "-p", prompt, "--output-format", "stream-json"],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=args.kimicode_timeout,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        raise RuntimeError(f"Kimi Code CLI failed with exit code {completed.returncode}: {stderr}")
+
+    content = _assistant_content_from_stream_json(completed.stdout)
+    return parse_contract_text(extract_first_json_object(content))
+
+
 def build_main_sample(step: ExpertStep, contract: CommunicationContract) -> dict:
     return {
         "messages": [
@@ -208,7 +298,12 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> Communicati
         return contract
     for attempt in range(args.retries + 1):
         try:
-            contract = distill_contract_with_kimi(step, args)
+            if args.provider == "kimi":
+                contract = distill_contract_with_kimi(step, args)
+            elif args.provider == "kimicode-cli":
+                contract = distill_contract_with_kimicode_cli(step, args)
+            else:
+                raise ValueError(f"unsupported provider: {args.provider}")
             if args.cache_dir:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(
@@ -226,6 +321,12 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> Communicati
                     "Kimi authentication failed. Check that the key belongs to the "
                     "Moonshot/Kimi OpenAI-compatible Chat Completions API."
                 ) from exc
+            if "401" in str(exc) or "403" in str(exc):
+                raise RuntimeError(
+                    "Kimi request failed with an authentication/authorization error. "
+                    "For Kimi Code keys, use --provider kimicode-cli and set "
+                    "KIMI_CODE_API_KEY."
+                ) from exc
             if attempt >= args.retries:
                 raise
             time.sleep(args.retry_sleep)
@@ -236,10 +337,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="data/raw/multisquare/ScienceWorld")
     parser.add_argument("--output-dir", default="data/contract_sft")
-    parser.add_argument("--provider", choices=("mock", "kimi"), default="mock")
+    parser.add_argument("--provider", choices=("mock", "kimi", "kimicode-cli"), default="mock")
     parser.add_argument("--model", default="kimi-k2.6")
     parser.add_argument("--api-base", default="https://api.moonshot.ai/v1")
     parser.add_argument("--api-key-env", default="MOONSHOT_API_KEY")
+    parser.add_argument("--kimicode-model", default="kimi-for-coding")
+    parser.add_argument("--kimicode-base-url", default="https://api.kimi.com/coding/v1")
+    parser.add_argument("--kimicode-provider-type", default="kimi")
+    parser.add_argument("--kimicode-api-key-env", default="KIMI_CODE_API_KEY")
+    parser.add_argument("--kimicode-cli-path", default="")
+    parser.add_argument("--kimicode-timeout", type=float, default=180.0)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--max-tokens", type=int, default=900)
     parser.add_argument("--retries", type=int, default=2)
@@ -280,8 +387,14 @@ def main() -> None:
         write_jsonl(output_dir / f"{split}.jsonl", samples)
     manifest = {
         "provider": args.provider,
-        "model": args.model,
-        "api_base": args.api_base if args.provider != "mock" else None,
+        "model": args.kimicode_model if args.provider == "kimicode-cli" else args.model,
+        "api_base": (
+            args.kimicode_base_url
+            if args.provider == "kimicode-cli"
+            else args.api_base
+            if args.provider != "mock"
+            else None
+        ),
         "expert_steps": len(steps),
         "samples": {split: len(samples) for split, samples in by_split.items()},
         "categories": dict(counts),

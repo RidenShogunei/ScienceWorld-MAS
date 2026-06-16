@@ -1,7 +1,12 @@
 import json
 
 from contract_schema import build_mock_contract, parse_contract_text
-from generate_contract_sft_data import build_main_sample, build_sub_samples, iter_expert_steps
+from generate_contract_sft_data import (
+    build_main_sample,
+    build_sub_samples,
+    extract_first_json_object,
+    iter_expert_steps,
+)
 
 
 def test_contract_round_trip():
@@ -84,3 +89,10 @@ def test_contract_samples_keep_expert_actions():
         "[action]go to kitchen[/action][subtask_done]true[/subtask_done]"
     )
 
+
+def test_extract_first_json_object_from_agent_output():
+    text = '• ```json\n{"goal":"g","action_guidance":["look"]}\n```\n• resume hint'
+    assert json.loads(extract_first_json_object(text)) == {
+        "goal": "g",
+        "action_guidance": ["look"],
+    }

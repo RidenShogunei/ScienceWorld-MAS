@@ -43,14 +43,36 @@ the official expert action:
 [action]...[/action][subtask_done]true|false[/subtask_done]
 ```
 
-## Kimi/Moonshot Usage
+## Kimi Code Usage
 
-The Kimi API is OpenAI Chat Completions compatible. The generator defaults to
-the documented base URL `https://api.moonshot.ai/v1` and reads the key from
-`MOONSHOT_API_KEY`. Do not commit API keys.
-If generation fails with `401 Invalid Authentication`, verify that the key is
-from the Moonshot/Kimi OpenAI-compatible Chat Completions platform and matches
-the selected API base URL.
+Kimi Code keys are intended for coding agents. The generator supports this path
+through the official Kimi Code CLI and the temporary `KIMI_MODEL_*` model
+configuration. Do not commit API keys.
+
+```powershell
+$env:KIMI_CODE_API_KEY = "..."
+python generate_contract_sft_data.py `
+  --provider kimicode-cli `
+  --limit 100 `
+  --cache-dir artifacts/contract_distill_cache `
+  --output-dir data/contract_sft_kimicode_100
+```
+
+The CLI path is auto-discovered from `PATH` or
+`%USERPROFILE%\.kimi-code\bin\kimi.exe`. If needed, pass it explicitly:
+
+```powershell
+python generate_contract_sft_data.py `
+  --provider kimicode-cli `
+  --kimicode-cli-path "$env:USERPROFILE\.kimi-code\bin\kimi.exe" `
+  --limit 100
+```
+
+## Moonshot/OpenAI-Compatible Usage
+
+If you have a regular Moonshot/Kimi OpenAI-compatible Chat Completions key
+rather than a Kimi Code key, use the SDK provider. The generator defaults to
+`https://api.moonshot.ai/v1` and reads the key from `MOONSHOT_API_KEY`.
 
 ```powershell
 $env:MOONSHOT_API_KEY = "..."
@@ -58,8 +80,7 @@ python generate_contract_sft_data.py `
   --provider kimi `
   --model kimi-k2.6 `
   --limit 100 `
-  --cache-dir artifacts/contract_distill_cache `
-  --output-dir data/contract_sft_kimi_100
+  --output-dir data/contract_sft_moonshot_100
 ```
 
 For code-path testing without API calls:

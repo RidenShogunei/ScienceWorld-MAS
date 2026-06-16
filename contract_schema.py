@@ -55,17 +55,25 @@ def parse_contract_text(text: str) -> CommunicationContract:
         goal=str(payload.get("goal", "")).strip(),
         subgoal=str(payload.get("subgoal", "")).strip(),
         rationale=str(payload.get("rationale", "")).strip(),
-        target_objects=[str(item).strip() for item in payload.get("target_objects", []) if str(item).strip()],
+        target_objects=_coerce_string_list(payload.get("target_objects", [])),
         location_hint=str(payload.get("location_hint", "")).strip(),
-        required_tools=[str(item).strip() for item in payload.get("required_tools", []) if str(item).strip()],
+        required_tools=_coerce_string_list(payload.get("required_tools", [])),
         success_condition=str(payload.get("success_condition", "")).strip(),
-        action_guidance=[
-            str(item).strip() for item in payload.get("action_guidance", []) if str(item).strip()
-        ],
+        action_guidance=_coerce_string_list(payload.get("action_guidance", [])),
         fallback_if_blocked=str(payload.get("fallback_if_blocked", "")).strip(),
     )
     contract.validate()
     return contract
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        value = [value]
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def build_mock_contract(
@@ -129,4 +137,3 @@ def _guess_target_objects(subtask: str, actions: list[str]) -> list[str]:
         if marker in text:
             candidates.append(marker)
     return candidates
-
