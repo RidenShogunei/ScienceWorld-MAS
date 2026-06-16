@@ -23,15 +23,34 @@ def read_rollouts(path: Path) -> list[SystemRollout]:
 
 
 def keep_rollout(rollout: SystemRollout, args: argparse.Namespace) -> bool:
+    if args.keep_local_nonnegative_steps:
+        return True
     if args.success_only and not rollout.success:
         return False
     return rollout.final_score >= args.min_final_score
 
 
-def build_main_sample(rollout: SystemRollout, decision_index: int) -> dict[str, Any] | None:
+def invocation_has_kept_step(invocation, args: argparse.Namespace) -> bool:
+    for step in invocation.steps:
+        if args.valid_actions_only and not step.action_valid:
+            continue
+        if args.keep_local_nonnegative_steps and step.score_after < step.score_before:
+            continue
+        return True
+    return False
+
+
+def build_main_sample(rollout: SystemRollout, decision_index: int, args: argparse.Namespace) -> dict[str, Any] | None:
     decision = rollout.main_decisions[decision_index]
     if not decision.format_valid:
         return None
+    if args.keep_local_nonnegative_steps and decision.invocation_id:
+        invocations = {
+            invocation.invocation_id: invocation for invocation in rollout.sub_invocations
+        }
+        invocation = invocations.get(decision.invocation_id)
+        if invocation is None or not invocation_has_kept_step(invocation, args):
+            return None
     contract = parse_contract_response(decision.raw_response)
     if contract is None:
         return None
@@ -55,14 +74,21 @@ def build_main_sample(rollout: SystemRollout, decision_index: int) -> dict[str, 
 
 def build_sub_samples(rollout: SystemRollout, args: argparse.Namespace) -> list[dict[str, Any]]:
     samples = []
+    seen_actions: set[str] = set()
     for invocation in rollout.sub_invocations:
         for step in invocation.steps:
             if not step.format_valid:
                 continue
             if args.valid_actions_only and not step.action_valid:
                 continue
+            if args.keep_local_nonnegative_steps and step.score_after < step.score_before:
+                continue
             if not step.action:
                 continue
+            normalized_action = " ".join(step.action.lower().split())
+            if args.drop_repeated_actions and normalized_action in seen_actions:
+                continue
+            seen_actions.add(normalized_action)
             samples.append(
                 {
                     "messages": [
@@ -100,7 +126,7 @@ def convert_rollouts(args: argparse.Namespace) -> dict[str, Any]:
     counts = Counter()
     for rollout in rollouts:
         for decision_index in range(len(rollout.main_decisions)):
-            main_sample = build_main_sample(rollout, decision_index)
+            main_sample = build_main_sample(rollout, decision_index, args)
             if main_sample is not None:
                 samples.append(main_sample)
                 counts["main"] += 1
@@ -120,6 +146,8 @@ def convert_rollouts(args: argparse.Namespace) -> dict[str, Any]:
         "success_only": args.success_only,
         "min_final_score": args.min_final_score,
         "valid_actions_only": args.valid_actions_only,
+        "keep_local_nonnegative_steps": args.keep_local_nonnegative_steps,
+        "drop_repeated_actions": args.drop_repeated_actions,
         "schema": "native_kimi_mas_sft_v1",
     }
     (output_dir / "manifest.json").write_text(
@@ -136,6 +164,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--success-only", action="store_true")
     parser.add_argument("--min-final-score", type=float, default=0.0)
     parser.add_argument("--valid-actions-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--keep-local-nonnegative-steps", action="store_true")
+    parser.add_argument("--drop-repeated-actions", action="store_true")
     return parser.parse_args()
 
 

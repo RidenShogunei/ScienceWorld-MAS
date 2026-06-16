@@ -22,6 +22,7 @@ from eval_episodes import load_episode_list
 from generate_contract_sft_data import (
     CONTRACT_MAIN_SYSTEM,
     CONTRACT_SUB_SYSTEM,
+    DISTILL_SYSTEM,
     extract_first_json_object,
 )
 from rollout_schema import (
@@ -66,13 +67,19 @@ def strip_code_fence(text: str) -> str:
 
 
 def parse_contract_response(text: str) -> CommunicationContract | None:
-    try:
-        return parse_contract_text(strip_code_fence(text))
-    except Exception:
+    candidates = [strip_code_fence(text)]
+    unescaped = text.replace('\\"', '"').replace("\\n", "\n")
+    if unescaped != text:
+        candidates.append(strip_code_fence(unescaped))
+    for candidate in candidates:
         try:
-            return parse_contract_text(extract_first_json_object(text))
+            return parse_contract_text(candidate)
         except Exception:
-            return None
+            try:
+                return parse_contract_text(extract_first_json_object(candidate))
+            except Exception:
+                pass
+    return None
 
 
 def parse_sub_response(text: str) -> tuple[str | None, bool, bool]:
@@ -116,23 +123,34 @@ def snap_action_to_valid(action: str | None, valid_actions: list[str], threshold
     return action
 
 
-PREFERRED_ACTION_PREFIXES = (
-    "look",
-    "inventory",
-    "open",
-    "close",
-    "go",
-    "pick up",
-    "move",
-    "activate",
-    "deactivate",
-    "examine",
-    "focus",
-    "use",
-    "pour",
-    "put",
-    "wait",
+ACTION_PREFIX_PRIORITIES = (
+    ("look", 0),
+    ("inventory", 0),
+    ("open", 1),
+    ("go", 1),
+    ("pick up", 1),
+    ("close", 2),
+    ("examine", 2),
+    ("focus", 2),
+    ("activate", 2),
+    ("deactivate", 2),
+    ("use", 3),
+    ("move", 4),
+    ("pour", 4),
+    ("put", 4),
+    ("wait", 5),
 )
+
+
+def action_prefix_priority(action: str) -> int:
+    if action in {"look around", "inventory"}:
+        return 0
+    if action.startswith("look at ") or action.startswith("look in "):
+        return 3
+    for prefix, priority in ACTION_PREFIX_PRIORITIES:
+        if action == prefix or action.startswith(prefix + " "):
+            return priority
+    return 6
 
 
 def action_rank(action: str, context: str = "") -> tuple[int, int, str]:
@@ -144,16 +162,31 @@ def action_rank(action: str, context: str = "") -> tuple[int, int, str]:
     }
     action_tokens = set(re.findall(r"[a-z0-9_]+", normalized))
     overlap = len(context_tokens & action_tokens)
-    preferred = any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in PREFERRED_ACTION_PREFIXES)
+    prefix_priority = action_prefix_priority(normalized)
     graph_action = normalized.startswith("connect ") or normalized.startswith("disconnect ")
-    priority = 0
+    priority = prefix_priority
     if graph_action:
-        priority += 4
-    if not preferred:
-        priority += 2
-    if normalized == "look around":
-        priority -= 1
+        priority += 10
     return (priority, -overlap, normalized)
+
+
+def select_candidate_actions(
+    actions: list[str],
+    *,
+    max_actions: int,
+    include_graph_actions: bool,
+    context: str = "",
+) -> list[str]:
+    ranked = sorted(actions, key=lambda action: action_rank(action, context))
+    if not include_graph_actions:
+        non_graph = [
+            action
+            for action in ranked
+            if not action.lower().startswith(("connect ", "disconnect "))
+        ]
+        if non_graph:
+            ranked = non_graph
+    return ranked[:max_actions]
 
 
 def format_valid_actions(
@@ -161,11 +194,17 @@ def format_valid_actions(
     max_actions: int,
     max_chars: int,
     context: str = "",
+    include_graph_actions: bool = False,
 ) -> str:
     selected = []
     total = 0
-    ranked = sorted(actions, key=lambda action: action_rank(action, context))
-    for action in ranked[:max_actions]:
+    ranked = select_candidate_actions(
+        actions,
+        max_actions=max_actions,
+        include_graph_actions=include_graph_actions,
+        context=context,
+    )
+    for action in ranked:
         line = f"- {action}"
         if total + len(line) + 1 > max_chars:
             break
@@ -227,6 +266,7 @@ class KimiCodeClient:
 def main_prompt(task: str, observation: str, previous_actions: list[str]) -> str:
     return (
         f"{CONTRACT_MAIN_SYSTEM}\n"
+        f"{DISTILL_SYSTEM}\n"
         "Return only the contract block. Do not use markdown or explain outside the block.\n\n"
         f"Task:\n{task}\n\n"
         f"Current observation:\n{observation}\n\n"
@@ -253,6 +293,7 @@ def sub_user_content(
         args.max_valid_actions,
         args.max_valid_action_chars,
         context,
+        include_graph_actions=args.include_graph_actions,
     )
     return (
         f"Contract:\n{contract.to_tagged_json()}\n\n"
@@ -281,6 +322,7 @@ def repair_prompt(raw: str, observation: str, valid_actions: list[str], args: ar
         args.max_valid_actions,
         args.max_valid_action_chars,
         observation,
+        include_graph_actions=args.include_graph_actions,
     )
     return (
         "Repair the ScienceWorld executor response. Return only "
@@ -473,6 +515,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-subtasks", type=int, default=10)
     parser.add_argument("--max-valid-actions", type=int, default=200)
     parser.add_argument("--max-valid-action-chars", type=int, default=12000)
+    parser.add_argument("--include-graph-actions", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--repair-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--snap-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--snap-threshold", type=float, default=0.72)

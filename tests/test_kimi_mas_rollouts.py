@@ -2,6 +2,7 @@ from collect_kimi_mas_rollouts import (
     format_valid_actions,
     parse_contract_response,
     parse_sub_response,
+    select_candidate_actions,
     snap_action_to_valid,
 )
 
@@ -23,6 +24,15 @@ def test_parse_contract_response_from_wrapped_json():
     )
     assert contract is not None
     assert contract.goal == "g"
+
+
+def test_parse_contract_response_from_escaped_tagged_json():
+    contract = parse_contract_response(
+        '[contract]{\\"goal\\":\\"g\\",\\"subgoal\\":\\"s\\",\\"rationale\\":\\"r\\",'
+        '\\"success_condition\\":\\"done\\",\\"action_guidance\\":[\\"look around\\"]}[/contract]'
+    )
+    assert contract is not None
+    assert contract.subgoal == "s"
 
 
 def test_parse_sub_response():
@@ -58,6 +68,17 @@ def test_format_valid_actions_prioritizes_task_actions_over_graph_actions():
     assert "- open cupboard" in lines
     assert "- pick up thermometer" in lines
     assert not any("connect air" in line for line in lines)
+
+
+def test_select_candidate_actions_filters_graph_actions_when_possible():
+    actions = ["connect door to hallway", "disconnect air", "look around", "open cupboard"]
+    selected = select_candidate_actions(
+        actions,
+        max_actions=10,
+        include_graph_actions=False,
+        context="open cupboard",
+    )
+    assert selected == ["look around", "open cupboard"]
 
 
 def test_snap_action_to_valid_maps_near_miss():

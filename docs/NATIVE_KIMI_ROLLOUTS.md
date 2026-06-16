@@ -51,6 +51,21 @@ python generate_sft_from_kimi_rollouts.py `
   --valid-actions-only
 ```
 
+For pilot data, where a rollout may contain useful early steps before later
+failure, use prefix-style filtering:
+
+```powershell
+python generate_sft_from_kimi_rollouts.py `
+  --input data/kimi_mas_rollouts/boil_native10_prefix_source.jsonl `
+  --output-dir data/kimi_mas_sft_boil_native10_clean `
+  --keep-local-nonnegative-steps `
+  --drop-repeated-actions `
+  --valid-actions-only
+```
+
+This keeps valid actions that do not reduce environment score and removes
+repeated actions within the same rollout.
+
 Output:
 
 ```text

@@ -52,18 +52,22 @@ def parse_contract_text(text: str) -> CommunicationContract:
     if not isinstance(payload, dict):
         raise ValueError("contract payload must be a JSON object")
     contract = CommunicationContract(
-        goal=str(payload.get("goal", "")).strip(),
-        subgoal=str(payload.get("subgoal", "")).strip(),
-        rationale=str(payload.get("rationale", "")).strip(),
+        goal=_clean_string(payload.get("goal", "")),
+        subgoal=_clean_string(payload.get("subgoal", "")),
+        rationale=_clean_string(payload.get("rationale", "")),
         target_objects=_coerce_string_list(payload.get("target_objects", [])),
-        location_hint=str(payload.get("location_hint", "")).strip(),
+        location_hint=_clean_string(payload.get("location_hint", "")),
         required_tools=_coerce_string_list(payload.get("required_tools", [])),
-        success_condition=str(payload.get("success_condition", "")).strip(),
+        success_condition=_clean_string(payload.get("success_condition", "")),
         action_guidance=_coerce_string_list(payload.get("action_guidance", [])),
-        fallback_if_blocked=str(payload.get("fallback_if_blocked", "")).strip(),
+        fallback_if_blocked=_clean_string(payload.get("fallback_if_blocked", "")),
     )
     contract.validate()
     return contract
+
+
+def _clean_string(value: Any) -> str:
+    return " ".join(str(value).replace("бк", "-").split())
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -73,7 +77,7 @@ def _coerce_string_list(value: Any) -> list[str]:
         value = [value]
     if not isinstance(value, list):
         value = [value]
-    return [str(item).strip() for item in value if str(item).strip()]
+    return [_clean_string(item) for item in value if _clean_string(item)]
 
 
 def build_mock_contract(

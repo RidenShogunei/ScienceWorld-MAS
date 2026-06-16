@@ -23,6 +23,15 @@ def test_contract_round_trip():
     assert parsed.success_condition
 
 
+def test_contract_parser_removes_kimi_separator_noise():
+    parsed = parse_contract_text(
+        '{"goal":"g","subgoal":"go to kitchen бк move there","rationale":"r",'
+        '"success_condition":"done","action_guidance":["open door бк access room"]}'
+    )
+    assert parsed.subgoal == "go to kitchen - move there"
+    assert parsed.action_guidance == ["open door - access room"]
+
+
 def test_iter_expert_steps_aligns_high_and_low(tmp_path):
     data_dir = tmp_path / "ScienceWorld"
     data_dir.mkdir()
