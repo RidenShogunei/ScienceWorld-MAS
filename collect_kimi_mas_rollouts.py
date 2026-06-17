@@ -39,6 +39,18 @@ SUB_PATTERN = re.compile(
     r"\[action\](.*?)\[/action\]\s*\[subtask_done\](true|false)\[/subtask_done\]",
     re.DOTALL | re.IGNORECASE,
 )
+SUB_ACTION_ID_PATTERN = re.compile(
+    r"\[action_id\]\s*(A\d+)\s*\[/action_id\]\s*"
+    r"\[subtask_done\](true|false)\[/subtask_done\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+KIMI_SUB_ACTION_ID_SYSTEM = (
+    "You are the ScienceWorld executor in a Main/Sub multi-agent system. "
+    "Given a structured contract, current observation, recent execution history, "
+    "and a list of candidate action ids, choose exactly one candidate action id "
+    "and state whether the current subgoal is complete."
+)
 
 
 def assistant_content_from_stream_json(stdout: str) -> str:
@@ -87,6 +99,13 @@ def parse_sub_response(text: str) -> tuple[str | None, bool, bool]:
     if not match:
         return None, False, False
     return match.group(1).strip(), match.group(2).lower() == "true", True
+
+
+def parse_sub_action_id_response(text: str) -> tuple[str | None, bool, bool]:
+    match = SUB_ACTION_ID_PATTERN.search(text)
+    if not match:
+        return None, False, False
+    return match.group(1).upper(), match.group(2).lower() == "true", True
 
 
 def snap_action_to_valid(action: str | None, valid_actions: list[str], threshold: float) -> str | None:
@@ -167,6 +186,8 @@ def action_rank(action: str, context: str = "") -> tuple[int, int, str]:
     priority = prefix_priority
     if graph_action:
         priority += 10
+    if normalized.startswith("focus on ") and overlap == 0:
+        priority += 8
     return (priority, -overlap, normalized)
 
 
@@ -175,6 +196,7 @@ def select_candidate_actions(
     *,
     max_actions: int,
     include_graph_actions: bool,
+    allow_all_focus_actions: bool = False,
     context: str = "",
 ) -> list[str]:
     ranked = sorted(actions, key=lambda action: action_rank(action, context))
@@ -186,7 +208,94 @@ def select_candidate_actions(
         ]
         if non_graph:
             ranked = non_graph
+    if not allow_all_focus_actions:
+        focus_filtered = [
+            action for action in ranked if not action.lower().startswith("focus on ") or is_safe_focus_action(action)
+        ]
+        if focus_filtered:
+            ranked = focus_filtered
     return ranked[:max_actions]
+
+
+def is_safe_focus_action(action: str) -> bool:
+    normalized = action.lower()
+    safe_markers = (
+        "substance",
+        "water",
+        "juice",
+        "chocolate",
+        "ice",
+        "steam",
+        "marshmallow",
+        "paint",
+        "cup containing",
+        "pot containing",
+        "metal pot",
+    )
+    unsafe_markers = (
+        "stove",
+        "oven",
+        "freezer",
+        "fridge",
+        "drawer",
+        "door",
+        "hallway",
+        "kitchen",
+        "workshop",
+        "cupboard",
+        "table",
+    )
+    return any(marker in normalized for marker in safe_markers) and not any(
+        marker in normalized for marker in unsafe_markers
+    )
+
+
+def candidate_action_map(
+    actions: list[str],
+    *,
+    max_actions: int,
+    include_graph_actions: bool,
+    context: str = "",
+) -> list[tuple[str, str]]:
+    selected = select_candidate_actions(
+        actions,
+        max_actions=max_actions,
+        include_graph_actions=include_graph_actions,
+        allow_all_focus_actions=False,
+        context=context,
+    )
+    return [(f"A{index}", action) for index, action in enumerate(selected)]
+
+
+def no_progress_actions(recent_history: list[dict[str, Any]]) -> set[str]:
+    blocked = set()
+    seen = set()
+    for item in recent_history:
+        action = str(item.get("action", "")).strip()
+        if not action:
+            continue
+        no_score = float(item.get("score_delta", 0.0)) <= 0.0
+        no_reward = float(item.get("reward", 0.0)) <= 0.0
+        no_observation = not bool(item.get("observation_changed", False))
+        repeated = action in seen
+        if no_score and no_reward and (no_observation or repeated):
+            blocked.add(action)
+        seen.add(action)
+    return blocked
+
+
+def remove_blocked_actions(actions: list[str], blocked: set[str]) -> list[str]:
+    if not blocked:
+        return actions
+    filtered = [action for action in actions if action not in blocked]
+    return filtered or actions
+
+
+def action_from_id(action_id: str | None, candidates: list[tuple[str, str]]) -> str | None:
+    if action_id is None:
+        return None
+    by_id = {candidate_id.upper(): action for candidate_id, action in candidates}
+    return by_id.get(action_id.upper())
 
 
 def format_valid_actions(
@@ -202,6 +311,7 @@ def format_valid_actions(
         actions,
         max_actions=max_actions,
         include_graph_actions=include_graph_actions,
+        allow_all_focus_actions=False,
         context=context,
     )
     for action in ranked:
@@ -267,6 +377,12 @@ def main_prompt(task: str, observation: str, previous_actions: list[str]) -> str
     return (
         f"{CONTRACT_MAIN_SYSTEM}\n"
         f"{DISTILL_SYSTEM}\n"
+        "ScienceWorld planning rules:\n"
+        "- Choose exactly one short subgoal achievable in 1-4 environment actions.\n"
+        "- Do not plan the whole task at once.\n"
+        "- The subgoal success_condition must be directly checkable from the next observations.\n"
+        "- If the agent needs to move, make the subgoal only about reaching the next room.\n"
+        "- If the agent needs an object, make the subgoal only about finding or taking that object.\n"
         "Return only the contract block. Do not use markdown or explain outside the block.\n\n"
         f"Task:\n{task}\n\n"
         f"Current observation:\n{observation}\n\n"
@@ -284,35 +400,49 @@ def main_user_content(task: str, observation: str, previous_actions: list[str]) 
 def sub_user_content(
     contract: CommunicationContract,
     observation: str,
-    valid_actions: list[str],
+    candidate_actions: list[tuple[str, str]],
+    recent_history: list[dict[str, Any]],
     args: argparse.Namespace,
 ) -> str:
-    context = contract.to_tagged_json() + "\n" + observation
-    valid_text = format_valid_actions(
-        valid_actions,
-        args.max_valid_actions,
-        args.max_valid_action_chars,
-        context,
-        include_graph_actions=args.include_graph_actions,
-    )
+    action_lines = [f"{action_id}: {action}" for action_id, action in candidate_actions]
+    valid_text = "\n".join(action_lines)
+    history_text = json.dumps(recent_history[-args.history_limit :], ensure_ascii=False, indent=2)
     return (
         f"Contract:\n{contract.to_tagged_json()}\n\n"
         f"Observation:\n{observation}\n\n"
-        f"Valid actions:\n{valid_text}"
+        f"Recent execution history:\n{history_text}\n\n"
+        f"Candidate actions:\n{valid_text}"
     )
 
 
 def sub_prompt(
     contract: CommunicationContract,
     observation: str,
-    valid_actions: list[str],
+    candidate_actions: list[tuple[str, str]],
+    recent_history: list[dict[str, Any]],
     args: argparse.Namespace,
 ) -> str:
+    if not args.use_action_ids:
+        action_text = "\n".join(action for _, action in candidate_actions)
+        return (
+            f"{CONTRACT_SUB_SYSTEM}\n"
+            "Return only [action]...[/action][subtask_done]true|false[/subtask_done]. "
+            "The action must be copied exactly from the valid actions list when possible.\n\n"
+            f"Contract:\n{contract.to_tagged_json()}\n\n"
+            f"Observation:\n{observation}\n\n"
+            f"Recent execution history:\n{json.dumps(recent_history[-args.history_limit:], ensure_ascii=False, indent=2)}\n\n"
+            f"Valid actions:\n{action_text}"
+        )
     return (
-        f"{CONTRACT_SUB_SYSTEM}\n"
-        "Return only [action]...[/action][subtask_done]true|false[/subtask_done]. "
-        "The action must be copied exactly from the valid actions list when possible.\n\n"
-        f"{sub_user_content(contract, observation, valid_actions, args)}"
+        f"{KIMI_SUB_ACTION_ID_SYSTEM}\n"
+        "ScienceWorld execution rules:\n"
+        "- Choose exactly one candidate action id from the Candidate actions list.\n"
+        "- Return only [action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done].\n"
+        "- Do not repeat an action if recent history shows it gave no reward, no score gain, and no useful observation change.\n"
+        "- Prefer actions that change room, open containers/doors, pick up needed objects, activate/deactivate devices, examine/focus target substances, or advance the success_condition.\n"
+        "- Use subtask_done=true only when the contract success_condition is already satisfied by the current observation or the chosen action will satisfy it.\n"
+        "- Never invent an action string.\n\n"
+        f"{sub_user_content(contract, observation, candidate_actions, recent_history, args)}"
     )
 
 
@@ -331,6 +461,26 @@ def repair_prompt(raw: str, observation: str, valid_actions: list[str], args: ar
         f"Previous response:\n{raw}\n\n"
         f"Observation:\n{observation}\n\n"
         f"Valid actions:\n{valid_text}"
+    )
+
+
+def repair_action_id_prompt(
+    raw: str,
+    observation: str,
+    candidate_actions: list[tuple[str, str]],
+    recent_history: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> str:
+    action_text = "\n".join(f"{action_id}: {action}" for action_id, action in candidate_actions)
+    history_text = json.dumps(recent_history[-args.history_limit :], ensure_ascii=False, indent=2)
+    return (
+        "Repair the ScienceWorld executor response. Return only "
+        "[action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done]. "
+        "Choose one id exactly from Candidate actions. Do not explain.\n\n"
+        f"Previous response:\n{raw}\n\n"
+        f"Observation:\n{observation}\n\n"
+        f"Recent execution history:\n{history_text}\n\n"
+        f"Candidate actions:\n{action_text}"
     )
 
 
@@ -398,20 +548,37 @@ def run_episode(
         decision.invocation_id = invocation.invocation_id
         subtask_done = False
         previous_actions = []
+        recent_history: list[dict[str, Any]] = []
 
         while not done and not subtask_done and step_count < args.step_limit:
             valid_actions = runner.valid_actions()
-            sub_user = sub_user_content(contract, observation, valid_actions, args)
+            candidate_source_actions = remove_blocked_actions(
+                valid_actions,
+                no_progress_actions(recent_history) if args.block_no_progress_repeats else set(),
+            )
+            context = contract.to_tagged_json() + "\n" + observation
+            candidate_actions = candidate_action_map(
+                candidate_source_actions,
+                max_actions=args.max_valid_actions,
+                include_graph_actions=args.include_graph_actions,
+                context=context,
+            )
+            sub_user = sub_user_content(contract, observation, candidate_actions, recent_history, args)
             sub_messages = [
-                {"role": "system", "content": CONTRACT_SUB_SYSTEM},
+                {"role": "system", "content": KIMI_SUB_ACTION_ID_SYSTEM if args.use_action_ids else CONTRACT_SUB_SYSTEM},
                 {"role": "user", "content": sub_user},
             ]
-            sub_raw = agent.prompt(sub_prompt(contract, observation, valid_actions, args))
-            action, declared_done, format_valid = parse_sub_response(sub_raw)
+            sub_raw = agent.prompt(sub_prompt(contract, observation, candidate_actions, recent_history, args))
+            if args.use_action_ids:
+                action_id, declared_done, format_valid = parse_sub_action_id_response(sub_raw)
+                action = action_from_id(action_id, candidate_actions)
+            else:
+                action, declared_done, format_valid = parse_sub_response(sub_raw)
 
             action_valid_precheck = action in set(valid_actions) if action else False
             if (
                 args.snap_invalid_actions
+                and not args.use_action_ids
                 and format_valid
                 and action is not None
                 and not action_valid_precheck
@@ -422,8 +589,15 @@ def run_episode(
                     action_valid_precheck = action in set(valid_actions)
 
             if args.repair_invalid_actions and (not format_valid or not action_valid_precheck):
-                repair_raw = agent.prompt(repair_prompt(sub_raw, observation, valid_actions, args))
-                repaired_action, repaired_done, repaired_format = parse_sub_response(repair_raw)
+                if args.use_action_ids:
+                    repair_raw = agent.prompt(
+                        repair_action_id_prompt(sub_raw, observation, candidate_actions, recent_history, args)
+                    )
+                    repaired_action_id, repaired_done, repaired_format = parse_sub_action_id_response(repair_raw)
+                    repaired_action = action_from_id(repaired_action_id, candidate_actions)
+                else:
+                    repair_raw = agent.prompt(repair_prompt(sub_raw, observation, valid_actions, args))
+                    repaired_action, repaired_done, repaired_format = parse_sub_response(repair_raw)
                 if repaired_format:
                     sub_raw = repair_raw
                     action, declared_done, format_valid = repaired_action, repaired_done, repaired_format
@@ -444,6 +618,7 @@ def run_episode(
 
             score_after = float(info.get("score", score_before))
             rollout.final_score = score_after
+            observation_changed = next_observation.strip() != observation.strip()
             invocation.steps.append(
                 ActionStep(
                     step_index=len(invocation.steps),
@@ -465,6 +640,18 @@ def run_episode(
             if action is None:
                 break
             previous_actions.append(action)
+            recent_history.append(
+                {
+                    "action": action,
+                    "format_valid": format_valid,
+                    "action_valid": action_valid,
+                    "reward": float(reward),
+                    "score_before": score_before,
+                    "score_after": score_after,
+                    "score_delta": score_after - score_before,
+                    "observation_changed": observation_changed,
+                }
+            )
             observation = next_observation
             subtask_done = declared_done
 
@@ -516,6 +703,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-valid-actions", type=int, default=200)
     parser.add_argument("--max-valid-action-chars", type=int, default=12000)
     parser.add_argument("--include-graph-actions", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-action-ids", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--history-limit", type=int, default=6)
+    parser.add_argument("--block-no-progress-repeats", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--repair-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--snap-invalid-actions", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--snap-threshold", type=float, default=0.72)

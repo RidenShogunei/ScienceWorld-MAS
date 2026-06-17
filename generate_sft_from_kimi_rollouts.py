@@ -13,6 +13,9 @@ from generate_sft_data import write_jsonl
 from rollout_schema import SystemRollout
 
 
+ACTION_ID_LINE_PREFIX = "A"
+
+
 def read_rollouts(path: Path) -> list[SystemRollout]:
     rollouts = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -89,17 +92,21 @@ def build_sub_samples(rollout: SystemRollout, args: argparse.Namespace) -> list[
             if args.drop_repeated_actions and normalized_action in seen_actions:
                 continue
             seen_actions.add(normalized_action)
+            assistant_content = (
+                f"[action]{step.action}[/action]"
+                f"[subtask_done]{str(step.declared_subtask_done).lower()}[/subtask_done]"
+            )
+            action_id = action_id_for_step_action(step)
+            if args.target_action_id and action_id is not None:
+                assistant_content = (
+                    f"[action_id]{action_id}[/action_id]"
+                    f"[subtask_done]{str(step.declared_subtask_done).lower()}[/subtask_done]"
+                )
             samples.append(
                 {
                     "messages": [
                         *step.prompt_messages,
-                        {
-                            "role": "assistant",
-                            "content": (
-                                f"[action]{step.action}[/action]"
-                                f"[subtask_done]{str(step.declared_subtask_done).lower()}[/subtask_done]"
-                            ),
-                        },
+                        {"role": "assistant", "content": assistant_content},
                     ],
                     "category": "sub",
                     "stage": "native_contract_act",
@@ -118,6 +125,23 @@ def build_sub_samples(rollout: SystemRollout, args: argparse.Namespace) -> list[
                 }
             )
     return samples
+
+
+def action_id_for_step_action(step) -> str | None:
+    if not step.prompt_messages:
+        return None
+    user_content = step.prompt_messages[-1].get("content", "")
+    action = (step.action or "").strip()
+    if not action:
+        return None
+    for line in user_content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(ACTION_ID_LINE_PREFIX) or ": " not in stripped:
+            continue
+        action_id, candidate_action = stripped.split(": ", 1)
+        if candidate_action.strip() == action:
+            return action_id.strip()
+    return None
 
 
 def convert_rollouts(args: argparse.Namespace) -> dict[str, Any]:
@@ -148,6 +172,7 @@ def convert_rollouts(args: argparse.Namespace) -> dict[str, Any]:
         "valid_actions_only": args.valid_actions_only,
         "keep_local_nonnegative_steps": args.keep_local_nonnegative_steps,
         "drop_repeated_actions": args.drop_repeated_actions,
+        "target_action_id": args.target_action_id,
         "schema": "native_kimi_mas_sft_v1",
     }
     (output_dir / "manifest.json").write_text(
@@ -166,6 +191,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--valid-actions-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--keep-local-nonnegative-steps", action="store_true")
     parser.add_argument("--drop-repeated-actions", action="store_true")
+    parser.add_argument("--target-action-id", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
 
 

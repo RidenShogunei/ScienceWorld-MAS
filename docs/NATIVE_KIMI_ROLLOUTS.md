@@ -31,13 +31,38 @@ python collect_kimi_mas_rollouts.py `
   --report-output artifacts/kimi_mas_rollouts/report_5.json
 ```
 
-The collector provides the current valid ScienceWorld actions to the Sub agent
-and can perform one repair call when the Sub output is malformed or not in the
-valid action set.
+By default the collector uses action-id grounding. The Sub agent sees a ranked
+candidate list such as `A0: look around` and must return only:
+
+```text
+[action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done]
+```
+
+This is intentionally stricter than asking the model to copy a raw action
+string. It fixes the most common native-rollout failure mode where the model
+understands the subtask but emits an action that is not exactly executable by
+ScienceWorld.
+
+The collector also gives the Sub agent a short recent execution history with
+reward, score delta, and whether the observation changed. Repeated zero-gain
+actions can be removed from the candidate set, so the Sub agent is pushed to
+try a different executable action instead of looping.
+
 Valid actions are ranked so task-like commands (`open`, `go`, `pick up`,
 `move`, `activate`, `examine`, etc.) appear before graph-style
-`connect`/`disconnect` commands. Near-miss actions can be snapped to a valid
-action, but task-like actions are not snapped into graph-style commands.
+`connect`/`disconnect` commands. Unrelated unsafe `focus on ...` actions, such
+as focusing on rooms or furniture, are filtered unless they target task-like
+substances or containers. Near-miss action snapping is still available in the
+legacy raw-action mode, but action-id grounding is preferred.
+
+Useful v2 options:
+
+- `--use-action-ids` / `--no-use-action-ids`: default is action-id grounding.
+- `--history-limit 6`: number of recent Sub executions shown back to Kimi.
+- `--block-no-progress-repeats`: remove repeated zero-gain actions when
+  alternatives exist.
+- `--include-graph-actions`: include low-level `connect`/`disconnect` actions
+  if a task needs them; default is off.
 
 ## Convert To SFT
 
@@ -65,6 +90,15 @@ python generate_sft_from_kimi_rollouts.py `
 
 This keeps valid actions that do not reduce environment score and removes
 repeated actions within the same rollout.
+
+For action-id grounded rollouts, Sub SFT targets are also action ids by default:
+
+```text
+[action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done]
+```
+
+The converter resolves the id from each step's saved candidate list. Use
+`--no-target-action-id` only for legacy raw-action SFT.
 
 Output:
 
