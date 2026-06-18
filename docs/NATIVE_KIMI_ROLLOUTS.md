@@ -17,7 +17,9 @@ environment, then the conversation is converted into Main/Sub SFT instances.
 
 ## Collect Rollouts
 
-Set the key only in the shell. Do not commit it.
+Set the key only in the shell or pass a local key file. Do not commit it. The
+collector calls Kimi Code through its Anthropic-compatible HTTP endpoint by
+default; it does not require the Kimi CLI.
 
 ```powershell
 $env:KIMI_CODE_API_KEY = "..."
@@ -31,38 +33,59 @@ python collect_kimi_mas_rollouts.py `
   --report-output artifacts/kimi_mas_rollouts/report_5.json
 ```
 
-By default the collector uses action-id grounding. The Sub agent sees a ranked
-candidate list such as `A0: look around` and must return only:
+If the key is stored in a local file:
 
-```text
-[action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done]
+```powershell
+python collect_kimi_mas_rollouts.py `
+  --api-key-file C:\Users\chenj\Desktop\kimi.txt `
+  --split train `
+  --episodes 5 `
+  --step-limit 30 `
+  --max-subtasks 10 `
+  --output data/kimi_mas_rollouts/rollouts_5.jsonl `
+  --report-output artifacts/kimi_mas_rollouts/report_5.json
 ```
 
-This is intentionally stricter than asking the model to copy a raw action
-string. It fixes the most common native-rollout failure mode where the model
-understands the subtask but emits an action that is not exactly executable by
-ScienceWorld.
+The default endpoint is `https://api.kimi.com/coding/v1/messages` with model
+`kimi-for-coding`.
+
+The collector uses raw action grounding. The Sub agent sees the
+environment-provided valid action list and must copy one executable action
+exactly:
+
+```text
+[action]look around[/action][subtask_done]true|false[/subtask_done][handoff]continue|complete|blocked|need_replan[/handoff]
+```
+
+Because the prompt already includes environment-provided valid actions, raw
+action grounding keeps the SFT target aligned with the final executor
+interface. The model should learn to copy one legal action exactly, rather than
+learning a candidate-list position such as `A3` that has no stable meaning
+across prompts.
 
 The collector also gives the Sub agent a short recent execution history with
-reward, score delta, and whether the observation changed. Repeated zero-gain
-actions can be removed from the candidate set, so the Sub agent is pushed to
-try a different executable action instead of looping.
+reward, score delta, and whether the observation changed. By default, the
+candidate action set is the full environment-provided valid action list. The
+collector does not filter `focus on ...`, graph actions, or repeated actions in
+the benchmark-faithful path.
 
-Valid actions are ranked so task-like commands (`open`, `go`, `pick up`,
-`move`, `activate`, `examine`, etc.) appear before graph-style
-`connect`/`disconnect` commands. Unrelated unsafe `focus on ...` actions, such
-as focusing on rooms or furniture, are filtered unless they target task-like
-substances or containers. Near-miss action snapping is still available in the
-legacy raw-action mode, but action-id grounding is preferred.
+Sub execution is bounded by `--max-steps-per-subtask` so a stale contract cannot
+consume the entire episode. The Sub agent can also hand control back explicitly:
+`complete` for a satisfied contract, `blocked` when no valid action can make
+progress, and `need_replan` when the contract no longer matches the state.
+
+Optional ranking and truncation flags are kept only for debugging, ablations,
+or token-budgeted pilots. The benchmark-faithful default is to pass the full
+valid action list through unchanged.
 
 Useful v2 options:
 
-- `--use-action-ids` / `--no-use-action-ids`: default is action-id grounding.
 - `--history-limit 6`: number of recent Sub executions shown back to Kimi.
-- `--block-no-progress-repeats`: remove repeated zero-gain actions when
-  alternatives exist.
-- `--include-graph-actions`: include low-level `connect`/`disconnect` actions
-  if a task needs them; default is off.
+- `--max-steps-per-subtask 6`: maximum executor actions before returning to
+  Main for replanning.
+- `--rank-valid-actions`: rank valid actions by simple task-action heuristics.
+- `--max-valid-actions N`: truncate the valid action list after optional
+  ranking; default `0` means no truncation.
 
 ## Convert To SFT
 
@@ -91,14 +114,11 @@ python generate_sft_from_kimi_rollouts.py `
 This keeps valid actions that do not reduce environment score and removes
 repeated actions within the same rollout.
 
-For action-id grounded rollouts, Sub SFT targets are also action ids by default:
+For default raw-action rollouts, Sub SFT targets are executable actions:
 
 ```text
-[action_id]A<num>[/action_id][subtask_done]true|false[/subtask_done]
+[action]look around[/action][subtask_done]true|false[/subtask_done][handoff]continue|complete|blocked|need_replan[/handoff]
 ```
-
-The converter resolves the id from each step's saved candidate list. Use
-`--no-target-action-id` only for legacy raw-action SFT.
 
 Output:
 

@@ -23,6 +23,7 @@ class ActionStep:
     prompt_messages: list[dict[str, str]] = field(default_factory=list)
     completion_token_ids: list[int] = field(default_factory=list)
     old_logprobs: list[float] = field(default_factory=list)
+    handoff: str = "continue"
 
     @property
     def score_delta(self) -> float:

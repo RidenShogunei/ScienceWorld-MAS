@@ -94,9 +94,11 @@ def test_contract_samples_keep_expert_actions():
     assert main["messages"][-1]["content"].startswith("[contract]")
     assert sub[0]["messages"][-1]["content"] == (
         "[action]open door to kitchen[/action][subtask_done]false[/subtask_done]"
+        "[handoff]continue[/handoff]"
     )
     assert sub[1]["messages"][-1]["content"] == (
         "[action]go to kitchen[/action][subtask_done]true[/subtask_done]"
+        "[handoff]complete[/handoff]"
     )
 
 

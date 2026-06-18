@@ -7,6 +7,9 @@ __pycache__/
 data/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/sft_contract_native_v1/
+!data/sft_contract_native_v1/*.jsonl
+!data/sft_contract_native_v1/manifest.json
 
 artifacts/*
 !artifacts/.gitkeep

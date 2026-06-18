@@ -12,6 +12,8 @@ import os
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,7 @@ CONTRACT_SUB_SYSTEM = (
     "You are the ScienceWorld executor. Use the structured contract and current observation "
     "to produce one executable action and whether the contract subgoal is complete. Output "
     "exactly: [action]...[/action][subtask_done]true|false[/subtask_done]"
+    "[handoff]continue|complete|blocked|need_replan[/handoff]"
 )
 
 
@@ -227,6 +230,62 @@ def distill_contract_with_kimicode_cli(
     return parse_contract_text(extract_first_json_object(content))
 
 
+def distill_contract_with_kimicode_http(
+    step: ExpertStep,
+    args: argparse.Namespace,
+) -> CommunicationContract:
+    api_key = os.environ.get(args.kimicode_api_key_env)
+    if not api_key and args.kimicode_api_key_file:
+        api_key = Path(args.kimicode_api_key_file).read_text(encoding="utf-8").strip()
+    if not api_key:
+        raise RuntimeError(
+            f"Missing API key. Set {args.kimicode_api_key_env} or pass --kimicode-api-key-file."
+        )
+
+    user_prompt = {
+        "task": step.task,
+        "planner_observation": step.observation,
+        "expert_subtask": step.subtask,
+        "expert_actions": step.expert_actions,
+        "executor_observations": step.low_observations[:3],
+    }
+    prompt = (
+        "You are a JSON API for ScienceWorld contract distillation.\n"
+        f"{DISTILL_SYSTEM}\n"
+        "Return one strict JSON object only. Do not use markdown. Do not explain.\n\n"
+        f"Input:\n{json.dumps(user_prompt, ensure_ascii=False)}"
+    )
+    payload = {
+        "model": args.kimicode_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+    }
+    endpoint = args.kimicode_base_url.rstrip("/") + "/v1/messages"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=args.kimicode_timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Kimi Code HTTP failed with HTTP {exc.code}: {body}") from exc
+    content = "\n".join(
+        str(chunk.get("text", ""))
+        for chunk in data.get("content", [])
+        if isinstance(chunk, dict) and chunk.get("type") == "text"
+    )
+    return parse_contract_text(extract_first_json_object(content))
+
+
 def align_contract_to_expert_actions(
     contract: CommunicationContract,
     expert_actions: list[str],
@@ -277,6 +336,7 @@ def build_sub_samples(step: ExpertStep, contract: CommunicationContract) -> list
     samples = []
     for idx, encoded_action in enumerate(step.expert_actions):
         done = step.low_dones[idx]
+        handoff = "complete" if done else "continue"
         observation = step.low_observations[idx]
         samples.append(
             {
@@ -291,6 +351,7 @@ def build_sub_samples(step: ExpertStep, contract: CommunicationContract) -> list
                         "content": (
                             f"[action]{encoded_action}[/action]"
                             f"[subtask_done]{str(done).lower()}[/subtask_done]"
+                            f"[handoff]{handoff}[/handoff]"
                         ),
                     },
                 ],
@@ -332,6 +393,8 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> Communicati
                 contract = distill_contract_with_kimi(step, args)
             elif args.provider == "kimicode-cli":
                 contract = distill_contract_with_kimicode_cli(step, args)
+            elif args.provider == "kimicode-http":
+                contract = distill_contract_with_kimicode_http(step, args)
             else:
                 raise ValueError(f"unsupported provider: {args.provider}")
             contract = align_contract_to_expert_actions(contract, step.expert_actions)
@@ -368,14 +431,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="data/raw/multisquare/ScienceWorld")
     parser.add_argument("--output-dir", default="data/contract_sft")
-    parser.add_argument("--provider", choices=("mock", "kimi", "kimicode-cli"), default="mock")
+    parser.add_argument("--provider", choices=("mock", "kimi", "kimicode-cli", "kimicode-http"), default="mock")
     parser.add_argument("--model", default="kimi-k2.6")
     parser.add_argument("--api-base", default="https://api.moonshot.ai/v1")
     parser.add_argument("--api-key-env", default="MOONSHOT_API_KEY")
     parser.add_argument("--kimicode-model", default="kimi-for-coding")
-    parser.add_argument("--kimicode-base-url", default="https://api.kimi.com/coding/v1")
+    parser.add_argument("--kimicode-base-url", default="https://api.kimi.com/coding")
     parser.add_argument("--kimicode-provider-type", default="kimi")
     parser.add_argument("--kimicode-api-key-env", default="KIMI_CODE_API_KEY")
+    parser.add_argument("--kimicode-api-key-file", default="")
     parser.add_argument("--kimicode-cli-path", default="")
     parser.add_argument("--kimicode-timeout", type=float, default=180.0)
     parser.add_argument("--temperature", type=float, default=0.2)
@@ -389,6 +453,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--main-only", action="store_true")
+    parser.add_argument("--skip-failures", action="store_true")
     return parser.parse_args()
 
 
@@ -397,8 +462,25 @@ def main() -> None:
     steps = iter_expert_steps(Path(args.data_dir), args.limit)
     by_split = {split: [] for split in ("train", "val", "test")}
     counts = Counter()
+    skipped = []
     for index, step in enumerate(steps, 1):
-        contract = contract_for_step(step, args)
+        try:
+            contract = contract_for_step(step, args)
+        except Exception as exc:
+            if not args.skip_failures:
+                raise
+            skipped.append(
+                {
+                    "source_index": step.source_index,
+                    "trajectory_step": step.step_index,
+                    "error": repr(exc),
+                }
+            )
+            print(
+                "[contract-sft] skipped "
+                f"source={step.source_index} step={step.step_index}: {exc}"
+            )
+            continue
         split = assign_split(
             step.split_key,
             seed=args.seed,
@@ -418,10 +500,10 @@ def main() -> None:
         write_jsonl(output_dir / f"{split}.jsonl", samples)
     manifest = {
         "provider": args.provider,
-        "model": args.kimicode_model if args.provider == "kimicode-cli" else args.model,
+        "model": args.kimicode_model if args.provider in {"kimicode-cli", "kimicode-http"} else args.model,
         "api_base": (
             args.kimicode_base_url
-            if args.provider == "kimicode-cli"
+            if args.provider in {"kimicode-cli", "kimicode-http"}
             else args.api_base
             if args.provider != "mock"
             else None
@@ -432,8 +514,11 @@ def main() -> None:
         "seed": args.seed,
         "train_ratio": args.train_ratio,
         "val_ratio": args.val_ratio,
-        "schema": "contract_v1",
+        "schema": "contract_v2",
+        "skipped": len(skipped),
     }
+    if skipped:
+        manifest["skipped_items"] = skipped
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",

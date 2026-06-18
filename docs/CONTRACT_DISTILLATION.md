@@ -40,7 +40,7 @@ The Sub model receives the contract plus current observation and still learns
 the official expert action:
 
 ```text
-[action]...[/action][subtask_done]true|false[/subtask_done]
+[action]...[/action][subtask_done]true|false[/subtask_done][handoff]continue|complete[/handoff]
 ```
 
 ## Kimi Code Usage
@@ -96,7 +96,8 @@ python generate_contract_sft_data.py `
 
 Kimi distills communication contracts only. It does not replace environment
 action labels. Actions and `subtask_done` remain from Multi-Square expert
-trajectories, keeping supervision auditable.
+trajectories, keeping supervision auditable. `handoff` is derived deterministically:
+`complete` when the expert subtask is done, otherwise `continue`.
 
 ## Caching And Failures
 
