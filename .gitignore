@@ -10,6 +10,9 @@ data/*
 !data/sft_contract_native_v1/
 !data/sft_contract_native_v1/*.jsonl
 !data/sft_contract_native_v1/manifest.json
+!data/minimal_contract_sft_v1_sample100/
+!data/minimal_contract_sft_v1_sample100/*.jsonl
+!data/minimal_contract_sft_v1_sample100/*.json
 
 artifacts/*
 !artifacts/.gitkeep
