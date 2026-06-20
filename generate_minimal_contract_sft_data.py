@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,16 @@ class MinimalContract:
         return "[contract]" + json.dumps(self.to_payload(), ensure_ascii=False, separators=(",", ":")) + "[/contract]"
 
 
+def clean_contract_text(text: str) -> str:
+    return (
+        text.replace("°C", " degrees C")
+        .replace("°F", " degrees F")
+        .replace("°", " degrees ")
+        .replace("≥", ">=")
+        .replace("≤", "<=")
+    )
+
+
 def unique_action_guidance(expert_actions: list[str], limit: int) -> list[str]:
     seen = set()
     guidance = []
@@ -116,11 +127,11 @@ def parse_minimal_contract_text(text: str) -> MinimalContract:
     if not isinstance(action_guidance, list) or not all(isinstance(item, str) for item in action_guidance):
         raise ValueError("action_guidance must be a list of strings")
     return MinimalContract(
-        subgoal=str(payload["subgoal"]),
-        success_condition=str(payload["success_condition"]),
-        target_objects=target_objects,
+        subgoal=clean_contract_text(str(payload["subgoal"])),
+        success_condition=clean_contract_text(str(payload["success_condition"])),
+        target_objects=[clean_contract_text(item) for item in target_objects],
         action_guidance=action_guidance,
-        handoff_if=str(payload["handoff_if"]),
+        handoff_if=clean_contract_text(str(payload["handoff_if"])),
     )
 
 
@@ -352,11 +363,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--main-only", action="store_true")
     parser.add_argument("--skip-failures", action="store_true")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of expert steps to distill concurrently.",
+    )
     return parser.parse_args()
+
+
+def samples_for_step(
+    step: ExpertStep,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    try:
+        contract = contract_for_step(step, args)
+    except Exception as exc:
+        if not args.skip_failures:
+            raise
+        return [], {
+            "source_index": step.source_index,
+            "trajectory_step": step.step_index,
+            "error": repr(exc),
+        }
+    samples = [build_main_sample(step, contract)]
+    if not args.main_only:
+        samples.extend(build_sub_samples(step, contract))
+    return samples, None
 
 
 def main() -> None:
     args = parse_args()
+    if args.workers < 1:
+        raise ValueError("--workers must be >= 1")
     steps = iter_expert_steps(Path(args.data_dir), None if args.sample_size else args.limit)
     if args.sample_size is not None:
         rng = random.Random(args.seed)
@@ -367,35 +406,55 @@ def main() -> None:
     counts: Counter[str] = Counter()
     skipped = []
 
-    for index, step in enumerate(steps, 1):
-        try:
-            contract = contract_for_step(step, args)
-        except Exception as exc:
-            if not args.skip_failures:
-                raise
-            skipped.append(
-                {
-                    "source_index": step.source_index,
-                    "trajectory_step": step.step_index,
-                    "error": repr(exc),
-                }
-            )
-            print(f"[minimal-contract-sft] skipped source={step.source_index} step={step.step_index}: {exc}")
-            continue
+    results: list[tuple[ExpertStep, list[dict[str, Any]], dict[str, Any] | None] | None] = [
+        None
+    ] * len(steps)
+    if args.workers == 1:
+        for index, step in enumerate(steps, 1):
+            samples, failure = samples_for_step(step, args)
+            results[index - 1] = (step, samples, failure)
+            if failure:
+                print(
+                    "[minimal-contract-sft] skipped "
+                    f"source={step.source_index} step={step.step_index}: {failure['error']}"
+                )
+            if index % 25 == 0:
+                print(f"[minimal-contract-sft] distilled {index}/{len(steps)} expert steps")
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(samples_for_step, step, args): (index, step)
+                for index, step in enumerate(steps)
+            }
+            completed = 0
+            for future in as_completed(futures):
+                index, step = futures[future]
+                samples, failure = future.result()
+                results[index] = (step, samples, failure)
+                completed += 1
+                if failure:
+                    print(
+                        "[minimal-contract-sft] skipped "
+                        f"source={step.source_index} step={step.step_index}: {failure['error']}"
+                    )
+                if completed % 25 == 0:
+                    print(f"[minimal-contract-sft] distilled {completed}/{len(steps)} expert steps")
 
+    for result in results:
+        if result is None:
+            raise RuntimeError("missing generation result")
+        step, samples, failure = result
+        if failure:
+            skipped.append(failure)
+            continue
         split = assign_split(
             step.split_key,
             seed=args.seed,
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
         )
-        samples = [build_main_sample(step, contract)]
-        if not args.main_only:
-            samples.extend(build_sub_samples(step, contract))
         by_split[split].extend(samples)
         counts.update(sample["category"] for sample in samples)
-        if index % 25 == 0:
-            print(f"[minimal-contract-sft] distilled {index}/{len(steps)} expert steps")
 
     output_dir = Path(args.output_dir)
     all_samples = []
@@ -413,6 +472,7 @@ def main() -> None:
         "guidance_limit": args.guidance_limit,
         "expert_steps_requested": len(steps),
         "expert_steps_generated": len(steps) - len(skipped),
+        "workers": args.workers,
         "skipped": skipped,
         "samples": {split: len(samples) for split, samples in by_split.items()},
         "all_samples": len(all_samples),

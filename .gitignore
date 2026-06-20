@@ -13,6 +13,9 @@ data/*
 !data/minimal_contract_sft_v1_sample100/
 !data/minimal_contract_sft_v1_sample100/*.jsonl
 !data/minimal_contract_sft_v1_sample100/*.json
+!data/minimal_contract_sft_v1_sample1000/
+!data/minimal_contract_sft_v1_sample1000/*.jsonl
+!data/minimal_contract_sft_v1_sample1000/*.json
 
 artifacts/*
 !artifacts/.gitkeep
