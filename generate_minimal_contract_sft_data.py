@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -176,6 +177,27 @@ def _kimicode_api_key(args: argparse.Namespace) -> str:
     return api_key
 
 
+def _minimax_api_key(args: argparse.Namespace) -> str:
+    api_key = (
+        os.environ.get(args.minimax_api_key_env)
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get(args.kimicode_api_key_env)
+    )
+    if not api_key and args.minimax_api_key_file:
+        api_key = Path(args.minimax_api_key_file).read_text(encoding="utf-8").strip()
+    if not api_key and args.kimicode_api_key_file:
+        api_key = Path(args.kimicode_api_key_file).read_text(encoding="utf-8").strip()
+    if not api_key:
+        raise RuntimeError(
+            f"Missing API key. Set {args.minimax_api_key_env} or pass --minimax-api-key-file."
+        )
+    return api_key
+
+
+def strip_thinking(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def distill_semantics_with_kimicode_http(step: ExpertStep, args: argparse.Namespace) -> dict[str, Any]:
     user_prompt = {
         "task": step.task,
@@ -223,6 +245,53 @@ def distill_semantics_with_kimicode_http(step: ExpertStep, args: argparse.Namesp
     return parsed
 
 
+def distill_semantics_with_minimax(step: ExpertStep, args: argparse.Namespace) -> dict[str, Any]:
+    user_prompt = {
+        "task": step.task,
+        "planner_observation": step.observation,
+        "expert_subtask": step.subtask,
+        "expert_actions": step.expert_actions,
+        "executor_observations": step.low_observations[:3],
+    }
+    prompt = (
+        "You are a JSON API for ScienceWorld contract distillation.\n"
+        f"{MINIMAL_DISTILL_SYSTEM}\n"
+        "Return one strict JSON object only. Do not use markdown. Do not explain.\n\n"
+        f"Input:\n{json.dumps(user_prompt, ensure_ascii=False)}"
+    )
+    payload = {
+        "model": args.minimax_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+    }
+    if args.minimax_model == "MiniMax-M3":
+        payload["thinking"] = {"type": "disabled"}
+    request = urllib.request.Request(
+        args.minimax_base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {_minimax_api_key(args)}",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=args.kimicode_timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"MiniMax HTTP failed with HTTP {exc.code}: {body}") from exc
+    choices = data.get("choices", [])
+    if not choices:
+        raise ValueError("MiniMax response did not include choices")
+    content = strip_thinking(str(choices[0].get("message", {}).get("content", "")))
+    parsed = json.loads(extract_first_json_object(content))
+    if not isinstance(parsed, dict):
+        raise ValueError("MiniMax semantic contract must be a JSON object")
+    return parsed
+
+
 def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> MinimalContract:
     cache_path = Path(args.cache_dir) / f"{step.source_index}_{step.step_index}.json"
     if args.cache_dir and cache_path.exists():
@@ -235,6 +304,24 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> MinimalCont
         unexpected = sorted(set(semantics) - {"subgoal", "success_condition", "target_objects"})
         if unexpected:
             raise ValueError(f"Kimi returned forbidden keys: {unexpected}")
+        target_objects = semantics.get("target_objects", [])
+        if not isinstance(target_objects, list):
+            target_objects = []
+        contract = MinimalContract(
+            subgoal=str(semantics.get("subgoal") or step.subtask),
+            success_condition=str(
+                semantics.get("success_condition")
+                or "The executor has completed the requested subgoal."
+            ),
+            target_objects=[str(item) for item in target_objects],
+            action_guidance=unique_action_guidance(step.expert_actions, args.guidance_limit),
+            handoff_if=CANONICAL_HANDOFF_IF,
+        )
+    elif args.provider == "minimax":
+        semantics = distill_semantics_with_retry(step, args)
+        unexpected = sorted(set(semantics) - {"subgoal", "success_condition", "target_objects"})
+        if unexpected:
+            raise ValueError(f"MiniMax returned forbidden keys: {unexpected}")
         target_objects = semantics.get("target_objects", [])
         if not isinstance(target_objects, list):
             target_objects = []
@@ -264,6 +351,8 @@ def contract_for_step(step: ExpertStep, args: argparse.Namespace) -> MinimalCont
 def distill_semantics_with_retry(step: ExpertStep, args: argparse.Namespace) -> dict[str, Any]:
     for attempt in range(args.retries + 1):
         try:
+            if args.provider == "minimax":
+                return distill_semantics_with_minimax(step, args)
             return distill_semantics_with_kimicode_http(step, args)
         except Exception as exc:
             failure_path = Path(args.failure_dir) / f"{step.source_index}_{step.step_index}.txt"
@@ -338,11 +427,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="data/raw/multisquare/ScienceWorld")
     parser.add_argument("--output-dir", default="data/minimal_contract_sft")
-    parser.add_argument("--provider", choices=("mock", "kimicode-http"), default="mock")
+    parser.add_argument("--provider", choices=("mock", "kimicode-http", "minimax"), default="mock")
     parser.add_argument("--kimicode-model", default="kimi-for-coding")
     parser.add_argument("--kimicode-base-url", default="https://api.kimi.com/coding")
     parser.add_argument("--kimicode-api-key-env", default="KIMI_CODE_API_KEY")
     parser.add_argument("--kimicode-api-key-file", default="")
+    parser.add_argument("--minimax-model", default="MiniMax-M3")
+    parser.add_argument("--minimax-base-url", default="https://api.minimaxi.com/v1")
+    parser.add_argument("--minimax-api-key-env", default="MINIMAX_API_KEY")
+    parser.add_argument("--minimax-api-key-file", default="")
     parser.add_argument("--kimicode-timeout", type=float, default=180.0)
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--max-tokens", type=int, default=450)

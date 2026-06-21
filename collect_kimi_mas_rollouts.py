@@ -164,18 +164,32 @@ def select_candidate_actions(
     return ranked
 
 
-class KimiHttpClient:
+def _strip_thinking(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+class LLMHttpClient:
     def __init__(self, args: argparse.Namespace) -> None:
-        api_key = os.environ.get(args.api_key_env)
+        self.provider = args.provider
+        default_key_env = "MINIMAX_API_KEY" if args.provider == "minimax" else args.api_key_env
+        api_key = os.environ.get(default_key_env) or os.environ.get(args.api_key_env)
+        if args.provider == "minimax":
+            api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key and args.api_key_file:
             api_key = Path(args.api_key_file).read_text(encoding="utf-8").strip()
         if not api_key:
             raise RuntimeError(
-                f"Missing API key. Set {args.api_key_env} or pass --api-key-file."
+                f"Missing API key. Set {default_key_env} or pass --api-key-file."
             )
         self.api_key = api_key
-        self.api_base = args.api_base.rstrip("/")
-        self.model = args.model
+        if args.provider == "minimax" and args.api_base == "https://api.kimi.com/coding":
+            self.api_base = "https://api.minimaxi.com/v1"
+        else:
+            self.api_base = args.api_base.rstrip("/")
+        if args.provider == "minimax" and args.model == "kimi-for-coding":
+            self.model = "MiniMax-M3"
+        else:
+            self.model = args.model
         self.temperature = args.temperature
         self.max_tokens = args.max_tokens
         self.request_timeout = args.request_timeout
@@ -192,9 +206,14 @@ class KimiHttpClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Kimi API failed with HTTP {exc.code}: {body}") from exc
+            raise RuntimeError(f"{self.provider} API failed with HTTP {exc.code}: {body}") from exc
 
     def prompt(self, text: str) -> str:
+        if self.provider == "minimax":
+            return self._prompt_openai_chat(text)
+        return self._prompt_kimi_messages(text)
+
+    def _prompt_kimi_messages(self, text: str) -> str:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": text}],
@@ -216,6 +235,29 @@ class KimiHttpClient:
             for chunk in chunks
             if isinstance(chunk, dict) and chunk.get("type") == "text"
         )
+
+    def _prompt_openai_chat(self, text: str) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": text}],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        if self.model == "MiniMax-M3":
+            payload["thinking"] = {"type": "disabled"}
+        data = self._post_json(
+            f"{self.api_base}/chat/completions",
+            {
+                "Authorization": f"Bearer {self.api_key}",
+                "content-type": "application/json",
+            },
+            payload,
+        )
+        choices = data.get("choices", [])
+        if not choices:
+            return ""
+        message = choices[0].get("message", {})
+        return _strip_thinking(str(message.get("content", "")))
 
 
 def main_prompt(task: str, observation: str, previous_actions: list[str]) -> str:
@@ -324,7 +366,7 @@ def choose_episodes(runner: ScienceWorldRunner, args: argparse.Namespace) -> lis
 
 
 def run_episode(
-    agent: KimiHttpClient,
+    agent: LLMHttpClient,
     runner: ScienceWorldRunner,
     spec: EpisodeSpec,
     args: argparse.Namespace,
@@ -338,7 +380,7 @@ def run_episode(
         variation_id=spec.variation_id,
         split=spec.split,
         task_description=task,
-        policy_version=f"kimi-native:{args.model}:{args.contract_schema}",
+        policy_version=f"{args.provider}-native:{agent.model}:{args.contract_schema}",
     )
     previous_actions: list[str] = []
     step_count = 0
@@ -519,6 +561,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--history-limit", type=int, default=6)
     parser.add_argument("--max-valid-actions", type=int, default=0, help="0 means include every environment valid action")
     parser.add_argument("--rank-valid-actions", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--provider", choices=("kimi", "minimax"), default="kimi")
     parser.add_argument("--model", default="kimi-for-coding")
     parser.add_argument("--api-base", default="https://api.kimi.com/coding")
     parser.add_argument("--api-key-env", default="KIMI_CODE_API_KEY")
@@ -535,7 +578,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    agent = KimiHttpClient(args)
+    agent = LLMHttpClient(args)
     runner = ScienceWorldRunner(step_limit=args.step_limit)
     rollouts: list[SystemRollout] = []
     errors: list[dict[str, Any]] = []
