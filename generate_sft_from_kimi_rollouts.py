@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from collect_kimi_mas_rollouts import parse_contract_response
+from collect_kimi_mas_rollouts import parse_contract_response, parse_minimal_contract_response
 from generate_sft_data import write_jsonl
 from rollout_schema import SystemRollout
 
@@ -40,6 +40,21 @@ def invocation_has_kept_step(invocation, args: argparse.Namespace) -> bool:
     return False
 
 
+def rollout_contract_schema(rollout: SystemRollout, args: argparse.Namespace) -> str:
+    if args.contract_schema != "auto":
+        return args.contract_schema
+    if rollout.policy_version.endswith(":minimal"):
+        return "minimal"
+    return "verbose"
+
+
+def parse_contract_for_rollout(raw_response: str, rollout: SystemRollout, args: argparse.Namespace):
+    schema = rollout_contract_schema(rollout, args)
+    if schema == "minimal":
+        return parse_minimal_contract_response(raw_response)
+    return parse_contract_response(raw_response)
+
+
 def build_main_sample(rollout: SystemRollout, decision_index: int, args: argparse.Namespace) -> dict[str, Any] | None:
     decision = rollout.main_decisions[decision_index]
     if not decision.format_valid:
@@ -51,17 +66,19 @@ def build_main_sample(rollout: SystemRollout, decision_index: int, args: argpars
         invocation = invocations.get(decision.invocation_id)
         if invocation is None or not invocation_has_kept_step(invocation, args):
             return None
-    contract = parse_contract_response(decision.raw_response)
+    contract = parse_contract_for_rollout(decision.raw_response, rollout, args)
     if contract is None:
         return None
+    schema = rollout_contract_schema(rollout, args)
     return {
         "messages": [
             *decision.prompt_messages,
             {"role": "assistant", "content": contract.to_tagged_json()},
         ],
         "category": "main",
-        "stage": "contract_plan",
+        "stage": "minimal_contract_plan" if schema == "minimal" else "contract_plan",
         "source": "kimi_native_rollout",
+        "schema": "minimal_contract_v1" if schema == "minimal" else "native_kimi_mas_sft_v2",
         "rollout_id": rollout.rollout_id,
         "task_name": rollout.task_name,
         "variation_id": rollout.variation_id,
@@ -102,8 +119,17 @@ def build_sub_samples(rollout: SystemRollout, args: argparse.Namespace) -> list[
                         {"role": "assistant", "content": assistant_content},
                     ],
                     "category": "sub",
-                    "stage": "contract_act",
+                    "stage": (
+                        "minimal_contract_act"
+                        if rollout_contract_schema(rollout, args) == "minimal"
+                        else "contract_act"
+                    ),
                     "source": "kimi_native_rollout",
+                    "schema": (
+                        "minimal_contract_v1"
+                        if rollout_contract_schema(rollout, args) == "minimal"
+                        else "native_kimi_mas_sft_v2"
+                    ),
                     "rollout_id": rollout.rollout_id,
                     "task_name": rollout.task_name,
                     "variation_id": rollout.variation_id,
@@ -149,6 +175,7 @@ def convert_rollouts(args: argparse.Namespace) -> dict[str, Any]:
         "valid_actions_only": args.valid_actions_only,
         "keep_local_nonnegative_steps": args.keep_local_nonnegative_steps,
         "drop_repeated_actions": args.drop_repeated_actions,
+        "contract_schema": args.contract_schema,
         "schema": "native_kimi_mas_sft_v2",
     }
     (output_dir / "manifest.json").write_text(
@@ -167,6 +194,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--valid-actions-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--keep-local-nonnegative-steps", action="store_true")
     parser.add_argument("--drop-repeated-actions", action="store_true")
+    parser.add_argument("--contract-schema", choices=("auto", "verbose", "minimal"), default="auto")
     return parser.parse_args()
 
 

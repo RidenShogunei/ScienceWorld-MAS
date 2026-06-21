@@ -24,6 +24,13 @@ from generate_contract_sft_data import (
     DISTILL_SYSTEM,
     extract_first_json_object,
 )
+from generate_minimal_contract_sft_data import (
+    CANONICAL_HANDOFF_IF,
+    MINIMAL_MAIN_SYSTEM,
+    MINIMAL_SUB_SYSTEM,
+    MinimalContract,
+    parse_minimal_contract_text,
+)
 from rollout_schema import (
     ActionStep,
     MainDecision,
@@ -65,6 +72,31 @@ def parse_contract_response(text: str) -> CommunicationContract | None:
             except Exception:
                 pass
     return None
+
+
+def parse_minimal_contract_response(text: str) -> MinimalContract | None:
+    candidates = [strip_code_fence(text)]
+    unescaped = text.replace('\\"', '"').replace("\\n", "\n")
+    if unescaped != text:
+        candidates.append(strip_code_fence(unescaped))
+    for candidate in candidates:
+        try:
+            return parse_minimal_contract_text(candidate)
+        except Exception:
+            try:
+                return parse_minimal_contract_text(extract_first_json_object(candidate))
+            except Exception:
+                pass
+    return None
+
+
+def parse_contract_for_schema(
+    text: str,
+    schema: str,
+) -> CommunicationContract | MinimalContract | None:
+    if schema == "minimal":
+        return parse_minimal_contract_response(text)
+    return parse_contract_response(text)
 
 
 def parse_sub_response(text: str) -> tuple[str | None, bool, str, bool]:
@@ -204,12 +236,45 @@ def main_prompt(task: str, observation: str, previous_actions: list[str]) -> str
     )
 
 
+def minimal_main_prompt(task: str, observation: str, previous_actions: list[str]) -> str:
+    return (
+        f"{MINIMAL_MAIN_SYSTEM}\n"
+        "Return exactly one [contract]{...}[/contract] block containing strict JSON with "
+        "only these keys: subgoal, success_condition, target_objects, action_guidance, handoff_if.\n"
+        "ScienceWorld planning rules:\n"
+        "- Choose exactly one short subgoal achievable in 1-4 environment actions.\n"
+        "- Do not plan the whole task at once.\n"
+        "- The success_condition must be directly checkable from the next observations.\n"
+        "- target_objects and action_guidance must be arrays of strings.\n"
+        "- action_guidance should name likely executable actions, but the executor will still "
+        "copy the final action from the valid actions list.\n"
+        f"- handoff_if must be exactly: {CANONICAL_HANDOFF_IF}\n"
+        "- If the agent needs to move, make the subgoal only about reaching the next room.\n"
+        "- If the agent needs an object, make the subgoal only about finding or taking that object.\n"
+        "Return only the contract block. Do not use markdown or explain outside the block.\n\n"
+        f"Task:\n{task}\n\n"
+        f"Current observation:\n{observation}\n\n"
+        f"Actions completed since previous plan:\n{json.dumps(previous_actions, ensure_ascii=False)}"
+    )
+
+
+def prompt_main_for_schema(
+    schema: str,
+    task: str,
+    observation: str,
+    previous_actions: list[str],
+) -> str:
+    if schema == "minimal":
+        return minimal_main_prompt(task, observation, previous_actions)
+    return main_prompt(task, observation, previous_actions)
+
+
 def main_user_content(task: str, observation: str) -> str:
     return f"Task:\n{task}\n\nPlanner state:\n{observation}"
 
 
 def sub_user_content(
-    contract: CommunicationContract,
+    contract: CommunicationContract | MinimalContract,
     observation: str,
     valid_actions: list[str],
     recent_history: list[dict[str, Any]],
@@ -225,13 +290,15 @@ def sub_user_content(
 
 
 def sub_prompt(
-    contract: CommunicationContract,
+    contract: CommunicationContract | MinimalContract,
     observation: str,
     valid_actions: list[str],
     recent_history: list[dict[str, Any]],
+    schema: str = "verbose",
 ) -> str:
+    sub_system = MINIMAL_SUB_SYSTEM if schema == "minimal" else CONTRACT_SUB_SYSTEM
     return (
-        f"{CONTRACT_SUB_SYSTEM}\n"
+        f"{sub_system}\n"
         "Return only [action]...[/action][subtask_done]true|false[/subtask_done]"
         "[handoff]continue|complete|blocked|need_replan[/handoff]. "
         "Copy the action exactly from the valid actions list. Set subtask_done=true "
@@ -271,19 +338,22 @@ def run_episode(
         variation_id=spec.variation_id,
         split=spec.split,
         task_description=task,
-        policy_version=f"kimi-native:{args.model}",
+        policy_version=f"kimi-native:{args.model}:{args.contract_schema}",
     )
     previous_actions: list[str] = []
     step_count = 0
     done = False
 
     while not done and step_count < args.step_limit and len(rollout.main_decisions) < args.max_subtasks:
+        main_system = MINIMAL_MAIN_SYSTEM if args.contract_schema == "minimal" else CONTRACT_MAIN_SYSTEM
         main_messages = [
-            {"role": "system", "content": CONTRACT_MAIN_SYSTEM},
+            {"role": "system", "content": main_system},
             {"role": "user", "content": main_user_content(task, observation)},
         ]
-        main_raw = agent.prompt(main_prompt(task, observation, previous_actions))
-        contract = parse_contract_response(main_raw)
+        main_raw = agent.prompt(
+            prompt_main_for_schema(args.contract_schema, task, observation, previous_actions)
+        )
+        contract = parse_contract_for_schema(main_raw, args.contract_schema)
         decision = MainDecision(
             decision_index=len(rollout.main_decisions),
             observation=observation,
@@ -332,7 +402,7 @@ def run_episode(
                 {
                     "role": "system",
                     "content": (
-                        CONTRACT_SUB_SYSTEM
+                        (MINIMAL_SUB_SYSTEM if args.contract_schema == "minimal" else CONTRACT_SUB_SYSTEM)
                         + " Include [handoff]continue|complete|blocked|need_replan[/handoff]."
                     ),
                 },
@@ -344,6 +414,7 @@ def run_episode(
                     observation,
                     ranked_actions,
                     recent_history[-args.history_limit :],
+                    args.contract_schema,
                 )
             )
             action, declared_done, handoff, format_valid = parse_sub_response(sub_raw)
@@ -455,6 +526,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout", type=float, default=180.0)
     parser.add_argument("--max-tokens", type=int, default=900)
     parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--contract-schema", choices=("verbose", "minimal"), default="verbose")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--output", default="data/kimi_mas_rollouts/rollouts.jsonl")
     parser.add_argument("--report-output", default="artifacts/kimi_mas_rollouts/report.json")

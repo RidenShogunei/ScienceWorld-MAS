@@ -1,6 +1,7 @@
 from collect_kimi_mas_rollouts import (
     action_rank,
     parse_contract_response,
+    parse_minimal_contract_response,
     parse_sub_response,
     parse_args as parse_collect_args,
     select_candidate_actions,
@@ -34,6 +35,17 @@ def test_parse_contract_response_from_escaped_tagged_json():
     )
     assert contract is not None
     assert contract.subgoal == "s"
+
+
+def test_parse_minimal_contract_response_from_tagged_json():
+    contract = parse_minimal_contract_response(
+        '[contract]{"subgoal":"reach kitchen","success_condition":"agent is in kitchen",'
+        '"target_objects":["door to kitchen"],"action_guidance":["open door to kitchen"],'
+        '"handoff_if":"complete when success_condition is met; need_replan if blocked"}[/contract]'
+    )
+    assert contract is not None
+    assert contract.subgoal == "reach kitchen"
+    assert contract.action_guidance == ["open door to kitchen"]
 
 
 def test_parse_sub_response():
@@ -99,6 +111,7 @@ def test_native_rollout_defaults(monkeypatch):
     assert args.max_valid_actions == 0
     assert args.max_steps_per_subtask == 6
     assert args.rank_valid_actions is False
+    assert args.contract_schema == "verbose"
 
 
 def test_kimi_sft_conversion_defaults(monkeypatch):
@@ -110,3 +123,4 @@ def test_kimi_sft_conversion_defaults(monkeypatch):
     assert args.valid_actions_only is True
     assert args.success_only is False
     assert args.keep_local_nonnegative_steps is False
+    assert args.contract_schema == "auto"
