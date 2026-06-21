@@ -16,6 +16,13 @@ data/*
 !data/minimal_contract_sft_v1_sample1000/
 !data/minimal_contract_sft_v1_sample1000/*.jsonl
 !data/minimal_contract_sft_v1_sample1000/*.json
+!data/kimi_mas_rollouts/
+data/kimi_mas_rollouts/*
+!data/kimi_mas_rollouts/minimax_minimal_native_train50.jsonl
+!data/kimi_mas_rollouts/minimax_minimal_native_train50_report.json
+!data/kimi_mas_sft_minimax_minimal_native_train50/
+!data/kimi_mas_sft_minimax_minimal_native_train50/*.jsonl
+!data/kimi_mas_sft_minimax_minimal_native_train50/*.json
 
 artifacts/*
 !artifacts/.gitkeep
