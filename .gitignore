@@ -23,6 +23,13 @@ data/kimi_mas_rollouts/*
 !data/kimi_mas_sft_minimax_minimal_native_train50/
 !data/kimi_mas_sft_minimax_minimal_native_train50/*.jsonl
 !data/kimi_mas_sft_minimax_minimal_native_train50/*.json
+!data/expert_minimal_rollouts/
+data/expert_minimal_rollouts/*
+!data/expert_minimal_rollouts/train50_success.jsonl
+!data/expert_minimal_rollouts/train50_success_report.json
+!data/expert_minimal_sft_train50_success/
+!data/expert_minimal_sft_train50_success/*.jsonl
+!data/expert_minimal_sft_train50_success/*.json
 
 artifacts/*
 !artifacts/.gitkeep

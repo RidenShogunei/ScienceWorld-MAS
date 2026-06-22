@@ -1,0 +1,14 @@
+{
+  "source": "scienceworld gold replay minimal contracts",
+  "episodes": 50,
+  "replaced_failed_rollouts": 2,
+  "metrics": {
+    "episodes": 50,
+    "success_rate": 1.0,
+    "mean_score": 100.0,
+    "mean_steps": 59.4,
+    "main_format_rate": 1.0,
+    "sub_format_rate": 1.0,
+    "action_valid_rate": 1.0
+  }
+}
