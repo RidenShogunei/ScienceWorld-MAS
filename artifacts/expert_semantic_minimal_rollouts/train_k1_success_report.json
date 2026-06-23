@@ -1,0 +1,27 @@
+{
+  "config": {
+    "split": "train",
+    "tasks": null,
+    "episodes": 5,
+    "k_per_task": 1,
+    "episode_list": "",
+    "step_limit": 500,
+    "chunk_size": 4,
+    "contract_style": "semantic",
+    "history_limit": 6,
+    "include_gold_action": true,
+    "seed": 123,
+    "output": "data\\expert_semantic_minimal_rollouts\\train_k1_success.jsonl",
+    "report_output": "artifacts\\expert_semantic_minimal_rollouts\\train_k1_success_report.json"
+  },
+  "metrics": {
+    "episodes": 30,
+    "success_rate": 1.0,
+    "mean_score": 100.0,
+    "mean_steps": 49.03333333333333,
+    "main_format_rate": 1.0,
+    "sub_format_rate": 1.0,
+    "action_valid_rate": 1.0
+  },
+  "errors": []
+}

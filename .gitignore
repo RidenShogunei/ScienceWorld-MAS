@@ -30,10 +30,19 @@ data/expert_minimal_rollouts/*
 !data/expert_minimal_sft_train50_success/
 !data/expert_minimal_sft_train50_success/*.jsonl
 !data/expert_minimal_sft_train50_success/*.json
+!data/expert_semantic_minimal_rollouts/
+data/expert_semantic_minimal_rollouts/*
+!data/expert_semantic_minimal_rollouts/train_k1_success.jsonl
+!data/expert_semantic_minimal_sft_train_k1_success/
+!data/expert_semantic_minimal_sft_train_k1_success/*.jsonl
+!data/expert_semantic_minimal_sft_train_k1_success/*.json
 
 artifacts/*
 !artifacts/.gitkeep
 !artifacts/EXPERIMENT_REPORT.md
+!artifacts/expert_semantic_minimal_rollouts/
+artifacts/expert_semantic_minimal_rollouts/*
+!artifacts/expert_semantic_minimal_rollouts/train_k1_success_report.json
 
 models/
 *.log

@@ -1,0 +1,20 @@
+{
+  "input": "data\\expert_semantic_minimal_rollouts\\train_k1_success.jsonl",
+  "source_rollouts": 30,
+  "samples": {
+    "train": 1845,
+    "val": 0,
+    "test": 0
+  },
+  "categories": {
+    "main": 374,
+    "sub": 1471
+  },
+  "success_only": false,
+  "min_final_score": 0.0,
+  "valid_actions_only": false,
+  "keep_local_nonnegative_steps": false,
+  "drop_repeated_actions": false,
+  "contract_schema": "auto",
+  "schema": "native_kimi_mas_sft_v2"
+}

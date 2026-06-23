@@ -1,2 +1,4 @@
 data/expert_minimal_rollouts/train50_success.jsonl filter=lfs diff=lfs merge=lfs -text
 data/expert_minimal_sft_train50_success/train.jsonl filter=lfs diff=lfs merge=lfs -text
+data/expert_semantic_minimal_rollouts/train_k1_success.jsonl filter=lfs diff=lfs merge=lfs -text
+data/expert_semantic_minimal_sft_train_k1_success/train.jsonl filter=lfs diff=lfs merge=lfs -text

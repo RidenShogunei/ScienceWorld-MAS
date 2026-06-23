@@ -43,7 +43,7 @@ def invocation_has_kept_step(invocation, args: argparse.Namespace) -> bool:
 def rollout_contract_schema(rollout: SystemRollout, args: argparse.Namespace) -> str:
     if args.contract_schema != "auto":
         return args.contract_schema
-    if rollout.policy_version.endswith(":minimal"):
+    if ":minimal" in rollout.policy_version:
         return "minimal"
     return "verbose"
 
