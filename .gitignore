@@ -36,6 +36,13 @@ data/expert_semantic_minimal_rollouts/*
 !data/expert_semantic_minimal_sft_train_k1_success/
 !data/expert_semantic_minimal_sft_train_k1_success/*.jsonl
 !data/expert_semantic_minimal_sft_train_k1_success/*.json
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/
+data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/*
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/train.jsonl
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/val.jsonl
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/test.jsonl
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/manifest.json
+!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/audit_report.json
 
 artifacts/*
 !artifacts/.gitkeep

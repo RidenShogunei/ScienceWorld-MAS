@@ -107,6 +107,9 @@ Contract-style Main/Sub communication distillation is documented in
 [`docs/CONTRACT_DISTILLATION.md`](docs/CONTRACT_DISTILLATION.md).
 Native Kimi Main/Sub environment rollout collection is documented in
 [`docs/NATIVE_KIMI_ROLLOUTS.md`](docs/NATIVE_KIMI_ROLLOUTS.md).
+The full evolution from static contract distillation to semantic expert
+environment rollouts is documented in
+[`docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md`](docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md).
 
 ## Environment Evaluation
 

@@ -2,3 +2,6 @@ data/expert_minimal_rollouts/train50_success.jsonl filter=lfs diff=lfs merge=lfs
 data/expert_minimal_sft_train50_success/train.jsonl filter=lfs diff=lfs merge=lfs -text
 data/expert_semantic_minimal_rollouts/train_k1_success.jsonl filter=lfs diff=lfs merge=lfs -text
 data/expert_semantic_minimal_sft_train_k1_success/train.jsonl filter=lfs diff=lfs merge=lfs -text
+data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/train.jsonl filter=lfs diff=lfs merge=lfs -text
+data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/val.jsonl filter=lfs diff=lfs merge=lfs -text
+data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/test.jsonl filter=lfs diff=lfs merge=lfs -text

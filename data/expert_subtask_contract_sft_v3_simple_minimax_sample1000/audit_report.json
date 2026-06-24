@@ -1,0 +1,23 @@
+{
+  "input_dir": "data\\expert_subtask_contract_sft_v3_simple_minimax_sample1000",
+  "rows": 5696,
+  "main_rows": 1000,
+  "sub_rows": 4696,
+  "main_parse_rate": 1.0,
+  "expert_subgoal_exact_rate": 1.0,
+  "canonical_handoff_rate": 1.0,
+  "causal_guidance_exact_rate": 1.0,
+  "upstream_target_conflict_rate": 0.0,
+  "sub_parse_rate": 1.0,
+  "expert_action_exact_rate": 1.0,
+  "sub_history_rate": 0.0,
+  "sub_simple_prompt_rate": 1.0,
+  "sub_valid_actions_rate": 0.0,
+  "source_trajectory_leakage_count": 0,
+  "split_source_trajectories": {
+    "train": 638,
+    "val": 88,
+    "test": 87
+  },
+  "bad_samples": []
+}

@@ -19,7 +19,9 @@ from eval_episodes import (
     load_episode_list,
     save_episode_list,
 )
+from collect_kimi_mas_rollouts import parse_minimal_contract_response, parse_sub_response
 from generate_sft_data import MAIN_SYSTEM, SUB_SYSTEM
+from generate_minimal_contract_sft_data import MINIMAL_MAIN_SYSTEM, MINIMAL_SUB_SYSTEM
 from provenance import experiment_provenance
 from scienceworld_env import EpisodeSpec, ScienceWorldRunner
 from sft_trainer import ensure_torch_set_submodule
@@ -30,6 +32,46 @@ SUB_PATTERN = re.compile(
     r"\[action\](.*?)\[/action\]\s*\[subtask_done\](true|false)\[/subtask_done\]",
     re.DOTALL | re.IGNORECASE,
 )
+
+
+def main_messages(
+    task: str,
+    observation: str,
+    group_actions: list[str],
+    agent_interface: str,
+) -> list[dict[str, str]]:
+    state = f"Group action:{group_actions}. Current observation: {observation}"
+    if agent_interface == "contract-simple":
+        return [
+            {"role": "system", "content": MINIMAL_MAIN_SYSTEM},
+            {"role": "user", "content": f"Task:\n{task}\n\nPlanner state:\n{state}"},
+        ]
+    return [
+        {"role": "system", "content": MAIN_SYSTEM},
+        {"role": "user", "content": f"Task:\n{task}\n\nPlanner state:\n{state}"},
+    ]
+
+
+def sub_messages(
+    plan: str,
+    observation: str,
+    agent_interface: str,
+) -> list[dict[str, str]]:
+    if agent_interface == "contract-simple":
+        return [
+            {"role": "system", "content": MINIMAL_SUB_SYSTEM},
+            {
+                "role": "user",
+                "content": f"Contract:\n{plan}\n\nObservation:\n{observation}",
+            },
+        ]
+    return [
+        {"role": "system", "content": SUB_SYSTEM},
+        {
+            "role": "user",
+            "content": f"Subtask:\n{plan}\n\nObservation:\n{observation}",
+        },
+    ]
 
 
 class HierarchicalPolicy:
@@ -84,33 +126,33 @@ class HierarchicalPolicy:
         )
 
     def plan(self, task: str, observation: str, group_actions: list[str], args) -> tuple[str | None, str]:
-        state = f"Group action:{group_actions}. Current observation: {observation}"
         text = self.generate(
             "main",
-            [
-                {"role": "system", "content": MAIN_SYSTEM},
-                {"role": "user", "content": f"Task:\n{task}\n\nPlanner state:\n{state}"},
-            ],
+            main_messages(task, observation, group_actions, args.agent_interface),
             args.max_input_length,
             args.main_max_new_tokens,
         )
+        if args.agent_interface == "contract-simple":
+            contract = parse_minimal_contract_response(text)
+            return (contract.to_tagged_json() if contract else None), text
         match = MAIN_PATTERN.search(text)
         return (match.group(1).strip() if match else None), text
 
-    def act(self, subtask: str, observation: str, args) -> tuple[str | None, bool, str]:
+    def act(self, plan: str, observation: str, args) -> tuple[str | None, bool, str, str]:
         text = self.generate(
             "sub",
-            [
-                {"role": "system", "content": SUB_SYSTEM},
-                {"role": "user", "content": f"Subtask:\n{subtask}\n\nObservation:\n{observation}"},
-            ],
+            sub_messages(plan, observation, args.agent_interface),
             args.max_input_length,
             args.sub_max_new_tokens,
         )
+        if args.agent_interface == "contract-simple":
+            action, done, handoff, valid = parse_sub_response(text)
+            return (action if valid else None), done, handoff, text
         match = SUB_PATTERN.search(text)
         if not match:
-            return None, False, text
-        return match.group(1).strip(), match.group(2).lower() == "true", text
+            return None, False, "continue", text
+        done = match.group(2).lower() == "true"
+        return match.group(1).strip(), done, ("complete" if done else "continue"), text
 
 
 def choose_episodes(runner: ScienceWorldRunner, args) -> list[EpisodeSpec]:
@@ -136,17 +178,22 @@ def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: Ep
     previous_group_actions: list[str] = []
 
     while not done and step_count < args.step_limit and len(groups) < args.max_subtasks:
-        subtask, main_raw = policy.plan(task, observation, previous_group_actions, args)
-        group = {"subtask": subtask, "main_raw": main_raw, "steps": []}
+        plan, main_raw = policy.plan(task, observation, previous_group_actions, args)
+        group = {
+            "subtask": plan if args.agent_interface == "legacy" else None,
+            "contract": plan if args.agent_interface == "contract-simple" else None,
+            "main_raw": main_raw,
+            "steps": [],
+        }
         groups.append(group)
-        if subtask is None:
+        if plan is None:
             format_errors += 1
             break
 
         current_group_actions = []
         subtask_done = False
         while not done and not subtask_done and step_count < args.step_limit:
-            action, subtask_done, sub_raw = policy.act(subtask, observation, args)
+            action, subtask_done, handoff, sub_raw = policy.act(plan, observation, args)
             if action is None:
                 format_errors += 1
                 group["steps"].append(
@@ -163,6 +210,7 @@ def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: Ep
                     "sub_raw": sub_raw,
                     "action": action,
                     "subtask_done": subtask_done,
+                    "handoff": handoff,
                     "action_valid": action_valid,
                     "reward": reward,
                     "score": float(info.get("score", 0.0)),
@@ -172,6 +220,8 @@ def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: Ep
             )
             current_group_actions.append(action)
             observation = next_observation
+            if handoff in {"blocked", "need_replan"}:
+                subtask_done = True
         previous_group_actions = current_group_actions
 
     final_score = 0.0
@@ -255,8 +305,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--step-limit", type=int, default=50)
     parser.add_argument("--max-subtasks", type=int, default=15)
+    parser.add_argument(
+        "--agent-interface",
+        choices=("legacy", "contract-simple"),
+        default="legacy",
+        help="Use the original Subtask+Observation interface or Contract+Observation.",
+    )
     parser.add_argument("--max-input-length", type=int, default=768)
-    parser.add_argument("--main-max-new-tokens", type=int, default=64)
+    parser.add_argument("--main-max-new-tokens", type=int, default=384)
     parser.add_argument("--sub-max-new-tokens", type=int, default=64)
     parser.add_argument("--use-4bit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=123)
