@@ -237,6 +237,35 @@ def test_strict_format_gate_zeroes_reward():
     assert sub_invocation_reward(rollout, rollout.sub_invocations[0]).total == 0.0
 
 
+def test_first_decision_format_penalty():
+    from scienceworld_rewards import RewardWeights
+
+    rollout = make_rollout("bad-first", 100.0)
+    rollout.main_decisions[0].format_valid = False
+    weights = RewardWeights(
+        strict_format_gate=False,
+        first_decision_format_penalty=0.3,
+    )
+    breakdown = main_reward(rollout, weights)
+    assert breakdown.components["first_decision_format_penalty"] == -0.3
+
+
+def test_collect_main_training_samples_penalizes_invalid_format():
+    from mgrpo_trainer import collect_main_training_samples
+
+    rollout = make_rollout("mixed", 50.0)
+    rollout.main_decisions[0].format_valid = False
+    rollout.main_decisions[0].completion_token_ids = [1, 2, 3]
+    rollout.main_decisions[0].old_logprobs = [-0.1, -0.2, -0.3]
+    samples = collect_main_training_samples(
+        [rollout],
+        {rollout.rollout_id: 0.5},
+        invalid_format_advantage=-1.0,
+    )
+    assert len(samples) == 1
+    assert samples[0][2] == -1.0
+
+
 def test_clipped_policy_loss_uses_token_and_slot_masks():
     current = torch.log(torch.tensor([[1.5, 1.0], [3.0, 3.0]]))
     old = torch.zeros_like(current)

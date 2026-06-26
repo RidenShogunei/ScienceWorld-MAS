@@ -24,6 +24,7 @@ class RewardWeights:
     no_progress_penalty: float = 0.05
     repetition_penalty: float = 0.05
     premature_done_penalty: float = 0.05
+    first_decision_format_penalty: float = 0.0
     strict_format_gate: bool = True
 
 
@@ -75,6 +76,8 @@ def main_reward(
         "no_progress_penalty": -weights.no_progress_penalty * no_progress,
         "repetition_penalty": -weights.repetition_penalty * repetition_rate,
     }
+    if decisions and not decisions[0].format_valid and weights.first_decision_format_penalty > 0:
+        components["first_decision_format_penalty"] = -weights.first_decision_format_penalty
     total = sum(components.values())
     if weights.strict_format_gate and format_rate < 1.0:
         components["strict_format_gate"] = -total

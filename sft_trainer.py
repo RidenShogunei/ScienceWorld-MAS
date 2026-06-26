@@ -25,7 +25,58 @@ from peft import LoraConfig, PeftModel, TaskType, get_peft_model, prepare_model_
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from agent_protocol import fit_sub_messages_for_inference, infer_protocol_from_schema, parse_env_sub_user
 from provenance import experiment_provenance
+
+
+def early_stop_state_after_epoch(
+    *,
+    val_loss: float,
+    train_loss: float,
+    best_val: float,
+    train_loss_at_best_val: float,
+    epochs_without_improvement: int,
+    overfit_epochs: int,
+    patience: int,
+    overfit_patience: int,
+    min_delta: float,
+) -> dict[str, Any]:
+    """Update early-stop counters after one epoch; stop on plateau or overfitting."""
+    improved = val_loss < best_val - min_delta
+    if improved:
+        return {
+            "best_val": val_loss,
+            "train_loss_at_best_val": train_loss,
+            "epochs_without_improvement": 0,
+            "overfit_epochs": 0,
+            "should_stop": False,
+            "reason": None,
+        }
+
+    new_no_improve = epochs_without_improvement + 1
+    is_overfit = (
+        val_loss > best_val + min_delta
+        and train_loss < train_loss_at_best_val - min_delta
+    )
+    new_overfit = overfit_epochs + 1 if is_overfit else 0
+
+    should_stop = False
+    reason = None
+    if new_no_improve >= patience:
+        should_stop = True
+        reason = "patience"
+    elif new_overfit >= overfit_patience:
+        should_stop = True
+        reason = "overfit"
+
+    return {
+        "best_val": best_val,
+        "train_loss_at_best_val": train_loss_at_best_val,
+        "epochs_without_improvement": new_no_improve,
+        "overfit_epochs": new_overfit,
+        "should_stop": should_stop,
+        "reason": reason,
+    }
 
 
 def ensure_torch_set_submodule() -> None:
@@ -60,6 +111,7 @@ class ChatDataset(Dataset):
     ) -> None:
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.category = category
         self.samples = []
         with Path(path).open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -74,32 +126,51 @@ class ChatDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        messages = self.samples[index]["messages"]
+        sample = self.samples[index]
+        messages = sample["messages"]
         if not messages or messages[-1].get("role") != "assistant":
             raise ValueError("SFT samples must end with an assistant message")
 
-        prompt = self.tokenizer.apply_chat_template(
-            messages[:-1],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
         completion = messages[-1]["content"] + (self.tokenizer.eos_token or "")
-        prompt_ids = self.tokenizer(
-            prompt,
-            add_special_tokens=False,
-            truncation=True,
-            max_length=self.max_length,
-        )["input_ids"]
         completion_ids = self.tokenizer(
             completion,
             add_special_tokens=False,
             truncation=True,
             max_length=self.max_length,
         )["input_ids"]
-
-        # Preserve the supervised completion when a long observation is truncated.
         completion_ids = completion_ids[: self.max_length]
         prompt_budget = max(self.max_length - len(completion_ids), 0)
+
+        prompt_messages = messages[:-1]
+        if self.category == "sub" and prompt_budget > 0:
+            user = next(
+                (message["content"] for message in prompt_messages if message.get("role") == "user"),
+                "",
+            )
+            if "Valid actions:" in user:
+                protocol = infer_protocol_from_schema(str(sample.get("schema", "")))
+                contract, observation, valid_actions, history = parse_env_sub_user(user)
+                prompt_messages = fit_sub_messages_for_inference(
+                    self.tokenizer,
+                    protocol,
+                    task_context=contract,
+                    observation=observation,
+                    valid_actions=valid_actions,
+                    recent_history=history,
+                    max_input_length=prompt_budget,
+                )
+
+        prompt = self.tokenizer.apply_chat_template(
+            prompt_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        prompt_ids = self.tokenizer(
+            prompt,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.max_length,
+        )["input_ids"]
         input_ids = prompt_ids[-prompt_budget:] + completion_ids if prompt_budget else completion_ids
         labels = [-100] * min(len(prompt_ids), prompt_budget) + completion_ids
         if len(labels) != len(input_ids):
@@ -205,8 +276,12 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     )
 
     model = load_model(args.base_model, args.use_4bit)
-    init_adapter = getattr(args, "init_adapter", None)
-    if category == "sub" and init_adapter:
+    init_adapter = None
+    if category == "main":
+        init_adapter = getattr(args, "init_main_adapter", None) or getattr(args, "init_adapter", None)
+    elif category == "sub":
+        init_adapter = getattr(args, "init_sub_adapter", None) or getattr(args, "init_adapter", None)
+    if init_adapter:
         init_path = Path(init_adapter)
         if not init_path.exists():
             raise FileNotFoundError(f"init adapter not found: {init_path}")
@@ -254,16 +329,24 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
     best_dir = output_dir / "best"
     history = []
     best_val = float("inf")
+    train_loss_at_best_val = float("inf")
+    epochs_without_improvement = 0
+    overfit_epochs = 0
+    early_stopped = False
+    early_stop_reason: str | None = None
+    early_stop_enabled = args.early_stop_patience > 0
     update_step = 0
     started_at = time.time()
     optimizer.zero_grad(set_to_none=True)
     steps_per_epoch = len(train_loader)
+    max_epochs = args.epochs
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, max_epochs + 1):
         model.train()
         running_loss = 0.0
         batches = 0
-        pbar = tqdm(train_loader, desc=f"[{category}] epoch {epoch}/{args.epochs}", unit="step",
+        epoch_label = f"{epoch}/{max_epochs}" if not early_stop_enabled else f"{epoch}/{max_epochs}|es"
+        pbar = tqdm(train_loader, desc=f"[{category}] epoch {epoch_label}", unit="step",
                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}")
         for batch_index, batch in enumerate(pbar, 1):
             batch = {key: value.to(device) for key, value in batch.items()}
@@ -297,19 +380,51 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
                 if args.max_updates is not None and update_step >= args.max_updates:
                     break
 
+        train_loss = running_loss / max(batches, 1)
         val_loss = evaluate_loss(model, val_loader, device, args.max_eval_batches)
         epoch_record = {
             "epoch": epoch,
-            "train_loss": running_loss / max(batches, 1),
+            "train_loss": train_loss,
             "val_loss": val_loss,
             "updates": update_step,
         }
         history.append(epoch_record)
         print(f"[{category}] {json.dumps(epoch_record)}")
         save_adapter(model, tokenizer, output_dir / "last")
+
+        if early_stop_enabled:
+            stop_state = early_stop_state_after_epoch(
+                val_loss=val_loss,
+                train_loss=train_loss,
+                best_val=best_val,
+                train_loss_at_best_val=train_loss_at_best_val,
+                epochs_without_improvement=epochs_without_improvement,
+                overfit_epochs=overfit_epochs,
+                patience=args.early_stop_patience,
+                overfit_patience=args.early_stop_overfit_patience,
+                min_delta=args.early_stop_min_delta,
+            )
+            epochs_without_improvement = stop_state["epochs_without_improvement"]
+            overfit_epochs = stop_state["overfit_epochs"]
+            epoch_record["epochs_without_improvement"] = epochs_without_improvement
+            epoch_record["overfit_epochs"] = overfit_epochs
+
         if val_loss < best_val:
             best_val = val_loss
+            train_loss_at_best_val = train_loss
             save_adapter(model, tokenizer, best_dir)
+
+        if early_stop_enabled and stop_state["should_stop"]:
+            early_stopped = True
+            early_stop_reason = stop_state["reason"]
+            print(
+                f"[{category}] early stop after epoch {epoch}: reason={early_stop_reason} "
+                f"(val_loss={val_loss:.6f} best_val={best_val:.6f} "
+                f"no_improve={epochs_without_improvement} overfit_streak={overfit_epochs})",
+                flush=True,
+            )
+            break
+
         if args.max_updates is not None and update_step >= args.max_updates:
             break
 
@@ -322,8 +437,14 @@ def train_agent(args: argparse.Namespace, tokenizer, category: str) -> dict[str,
         "updates": update_step,
         "elapsed_seconds": time.time() - started_at,
         "history": history,
+        "early_stopped": early_stopped,
+        "early_stop_reason": early_stop_reason,
+        "epochs_completed": len(history),
         "run_config": {
             "epochs": args.epochs,
+            "early_stop_patience": args.early_stop_patience,
+            "early_stop_overfit_patience": args.early_stop_overfit_patience,
+            "early_stop_min_delta": args.early_stop_min_delta,
             "batch_size": args.batch_size,
             "gradient_accumulation_steps": args.gradient_accumulation_steps,
             "lr": args.lr,
@@ -360,10 +481,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--init-adapter",
         default=None,
-        help="Optional LoRA checkpoint to continue Sub training from",
+        help="Optional LoRA checkpoint for both agents (overridden by per-agent flags).",
     )
+    parser.add_argument("--init-main-adapter", default=None)
+    parser.add_argument("--init-sub-adapter", default=None)
     parser.add_argument("--agents", choices=("main", "sub", "both"), default="both")
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=2,
+        help="Maximum epochs; with --early-stop-patience > 0 training may stop earlier.",
+    )
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="Stop after this many epochs without val improvement (0 disables early stopping).",
+    )
+    parser.add_argument(
+        "--early-stop-overfit-patience",
+        type=int,
+        default=2,
+        help="Stop after this many consecutive overfit epochs (val up while train down).",
+    )
+    parser.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=1e-4,
+        help="Minimum val_loss decrease to count as improvement.",
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--eval-batch-size", type=int, default=8)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)

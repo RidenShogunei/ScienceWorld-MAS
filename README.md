@@ -130,15 +130,25 @@ Before training or evaluation on a new machine:
 python doctor.py --smoke-environment
 ```
 
-## Current Milestone
+## Current Milestone (V7 Expert Subtask Contract)
 
-The first milestone is data validity, followed by:
+Active dataset: `data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/`
+(expert gold replay + MiniMax contract, minimal protocol).
 
-1. Train separate Main and Sub LoRA adapters from the converted SFT data.
-2. Evaluate action syntax, subtask prediction, and full environment success on
-   held-out ScienceWorld variations.
-3. Establish SFT, Main-only RL, Sub-only RL, and joint RL comparisons.
-4. Add dynamic direct/delegate decisions only after the fixed hierarchy works.
+```bash
+# SFT
+bash scripts/run_sft_expert_subtask_contract_v3.sh
+
+# Stratified-145 environment eval (greedy fp16)
+bash scripts/run_eval_expert_subtask_contract_v3.sh
+
+# Sub-only MGRPO (optional; see artifacts/RECENT_DATA_SFT_REPORT.md)
+bash scripts/run_sub_only_mgrpo_expert_subtask_contract_v3.sh
+```
+
+Checkpoints and training logs stay local under `artifacts/checkpoints/` (gitignored).
+Experiment summary: [`artifacts/RECENT_DATA_SFT_REPORT.md`](artifacts/RECENT_DATA_SFT_REPORT.md).
+Pipeline history: [`docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md`](docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md).
 
 ## Tests
 
