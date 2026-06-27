@@ -244,6 +244,37 @@ def test_mgrpo_batch_normalizes_main_and_aligned_sub_separately():
     assert min(item.advantage for item in batch.sub_records) < 0
 
 
+def test_mgrpo_batch_can_give_sub_rollout_level_rewards():
+    rollouts = [
+        make_rollout("low", 0.0, invocation_count=1, valid=True),
+        make_rollout("high", 100.0, invocation_count=1, valid=True),
+    ]
+    batch = build_mgrpo_batch(
+        rollouts,
+        target_invocations=1,
+        sub_reward_mode="rollout",
+    )
+    rewards = {item.rollout_id: item.reward for item in batch.sub_records}
+    assert rewards["low"] < rewards["high"]
+    assert min(item.advantage for item in batch.sub_records) < 0
+    assert max(item.advantage for item in batch.sub_records) > 0
+
+
+def test_mgrpo_batch_rollout_format_mode_gates_bad_sub_format():
+    good = make_rollout("good", 100.0, invocation_count=1, valid=True)
+    bad = make_rollout("bad", 100.0, invocation_count=1, valid=True)
+    bad.sub_invocations[0].steps[0].format_valid = False
+
+    batch = build_mgrpo_batch(
+        [good, bad],
+        target_invocations=1,
+        sub_reward_mode="rollout_format",
+    )
+    rewards = {item.rollout_id: item.reward for item in batch.sub_records}
+    assert rewards["good"] > 0
+    assert rewards["bad"] == 0.0
+
+
 def test_mgrpo_batch_keeps_empty_sub_slots_masked():
     direct = make_rollout("direct", 0.0, invocation_count=0)
     delegated = make_rollout("delegated", 100.0, invocation_count=1)

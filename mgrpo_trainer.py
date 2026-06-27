@@ -895,6 +895,7 @@ def train_mgrpo(args: argparse.Namespace) -> None:
                 rollouts, args.target_invocations,
                 seed=args.seed + global_iter,
                 reward_weights=rw,
+                sub_reward_mode=args.sub_reward_mode,
                 epsilon=args.epsilon,
             )
             _log_group_advantage_stats(batch)
@@ -1098,6 +1099,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-dir", default="artifacts/checkpoints/mgrpo")
     p.add_argument("--reward-action-validity", type=float, default=None,
                    help="Override RewardWeights.action_validity (e.g. 0.3 for Sub-only RL)")
+    p.add_argument(
+        "--sub-reward-mode",
+        choices=("local", "rollout", "rollout_format"),
+        default="local",
+        help=(
+            "Sub reward source. local uses invocation-level shaping; rollout gives every "
+            "Sub invocation the full rollout reward; rollout_format additionally zeroes "
+            "the Sub reward when that invocation has any format failure."
+        ),
+    )
     p.add_argument("--reward-no-progress-penalty", type=float, default=0.05)
     p.add_argument("--reward-repetition-penalty", type=float, default=0.05)
     p.add_argument("--reward-premature-done-penalty", type=float, default=0.05)

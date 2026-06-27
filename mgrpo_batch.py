@@ -40,6 +40,28 @@ class MGRPOBatch:
     target_invocations: int
 
 
+def _sub_rollout_reward(
+    rollout_breakdown: RewardBreakdown,
+    invocation: SubInvocation,
+    mode: str,
+) -> RewardBreakdown:
+    if mode == "local":
+        raise ValueError("_sub_rollout_reward should only handle rollout-level modes")
+
+    format_rate = (
+        sum(step.format_valid for step in invocation.steps) / max(len(invocation.steps), 1)
+    )
+    components = {
+        "rollout_reward": rollout_breakdown.total,
+        "sub_format_gate": 0.0,
+    }
+    total = rollout_breakdown.total
+    if mode == "rollout_format" and format_rate < 1.0:
+        components["sub_format_gate"] = -total
+        total = 0.0
+    return RewardBreakdown(total=total, components=components)
+
+
 def _normalize_sub_rewards(
     slots_with_rewards: list[tuple[AlignedSubSlot, float, RewardBreakdown | None]],
     epsilon: float,
@@ -69,9 +91,14 @@ def build_mgrpo_batch(
     target_invocations: int,
     seed: int = 123,
     reward_weights: RewardWeights = RewardWeights(),
+    sub_reward_mode: str = "local",
     epsilon: float = 1e-6,
 ) -> MGRPOBatch:
     """Create complete-Main and synchronized-Sub training records."""
+    if sub_reward_mode not in {"local", "rollout", "rollout_format"}:
+        raise ValueError(
+            "sub_reward_mode must be one of: local, rollout, rollout_format"
+        )
     if len({rollout.rollout_id for rollout in rollouts}) != len(rollouts):
         raise ValueError("rollout_id values must be unique")
 
@@ -103,7 +130,14 @@ def build_mgrpo_batch(
             if slot.invocation is None:
                 slots_with_rewards.append((slot, 0.0, None))
             else:
-                breakdown = sub_invocation_reward(rollout, slot.invocation, reward_weights)
+                if sub_reward_mode == "local":
+                    breakdown = sub_invocation_reward(rollout, slot.invocation, reward_weights)
+                else:
+                    breakdown = _sub_rollout_reward(
+                        main_breakdowns[rollout.rollout_id],
+                        slot.invocation,
+                        sub_reward_mode,
+                    )
                 slots_with_rewards.append((slot, breakdown.total, breakdown))
 
     sub_advantages = _normalize_sub_rewards(slots_with_rewards, epsilon)
