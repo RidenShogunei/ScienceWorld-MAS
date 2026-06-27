@@ -45,6 +45,7 @@ from rollout_schema import (
     SystemRollout,
     group_key,
 )
+from eval_episodes import load_episode_list
 from scienceworld_env import EpisodeSpec, ScienceWorldRunner
 from scienceworld_rewards import RewardWeights
 from sft_trainer import ensure_torch_set_submodule
@@ -819,6 +820,10 @@ def train_mgrpo(args: argparse.Namespace) -> None:
 
     runner = ScienceWorldRunner(step_limit=args.step_limit)
     specs_pool = _build_spec_pool(runner, args)
+    print(
+        f"[mgrpo] rollout pool: {len(specs_pool)} episodes"
+        f"{f' from {args.episode_list}' if args.episode_list else f' ({args.split})'}"
+    )
 
     # Determine starting iteration index for resume numbering
     start_iter = 0
@@ -973,6 +978,10 @@ def train_mgrpo(args: argparse.Namespace) -> None:
 
 
 def _build_spec_pool(runner: ScienceWorldRunner, args: argparse.Namespace) -> list[EpisodeSpec]:
+    if args.episode_list:
+        _, specs = load_episode_list(args.episode_list)
+        return specs
+
     task_names = args.tasks or runner.task_names
     candidates = []
     for tn in task_names:
@@ -994,6 +1003,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--agents", choices=("main", "sub", "both"), default="both")
     p.add_argument("--protocol", choices=("subtask", "contract", "minimal"), default="subtask")
     p.add_argument("--split", choices=("train", "dev", "test"), default="dev")
+    p.add_argument(
+        "--episode-list",
+        default=None,
+        help="Fixed JSON episode list for rollout sampling "
+        "(e.g. artifacts/eval/dev_stratified_k5_seed123.json).",
+    )
     p.add_argument("--tasks", nargs="*", default=None)
     p.add_argument("--groups", type=int, default=8)
     p.add_argument("--group-size", type=int, default=4)
@@ -1099,7 +1114,13 @@ def parse_args() -> argparse.Namespace:
     if contract_like and args.max_completion_tokens < 96:
         args.max_completion_tokens = 96
     if args.rollout_use_4bit is None:
-        args.rollout_use_4bit = False if (args.use_4bit and args.agents == "sub") else args.use_4bit
+        # Contract/minimal Main JSON is fragile under 4bit rollout; prefer fp16.
+        if args.use_4bit and (
+            args.agents == "sub" or contract_like
+        ):
+            args.rollout_use_4bit = False
+        else:
+            args.rollout_use_4bit = args.use_4bit
     if args.rollout_main_do_sample is None:
         args.rollout_main_do_sample = args.rollout_do_sample if args.agents != "sub" else False
     if args.rollout_sub_do_sample is None:

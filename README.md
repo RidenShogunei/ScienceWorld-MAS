@@ -147,7 +147,8 @@ bash scripts/run_sub_only_mgrpo_expert_subtask_contract_v3.sh
 ```
 
 Checkpoints and training logs stay local under `artifacts/checkpoints/` (gitignored).
-Experiment summary: [`artifacts/RECENT_DATA_SFT_REPORT.md`](artifacts/RECENT_DATA_SFT_REPORT.md).
+Experiment summary: [`artifacts/RECENT_DATA_SFT_REPORT.md`](artifacts/RECENT_DATA_SFT_REPORT.md).  
+V7 MGRPO lessons (Sub-only + Joint): [`artifacts/V7_CONTRACT_RL_REPORT.md`](artifacts/V7_CONTRACT_RL_REPORT.md).
 Pipeline history: [`docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md`](docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md).
 
 ## Tests

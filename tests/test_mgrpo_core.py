@@ -6,7 +6,7 @@ from mgrpo_objective import add_reference_kl, clipped_policy_loss
 from rollout_schema import ActionStep, MainDecision, SubInvocation, SystemRollout
 from scienceworld_rewards import main_reward, sub_invocation_reward
 from trajectory_alignment import align_sub_invocations, group_relative_advantages
-from mgrpo_trainer import sample_iter_specs
+from mgrpo_trainer import _build_spec_pool, sample_iter_specs
 from rollout_schema import group_key
 from scienceworld_env import EpisodeSpec
 
@@ -111,6 +111,31 @@ def test_rollout_round_trip():
 def test_group_key_includes_variation_id():
     assert group_key("boil", 7, "dev") == "dev:boil:7"
     assert group_key("boil", 0, "dev") != group_key("boil", 1, "dev")
+
+
+def test_build_spec_pool_from_episode_list():
+    from argparse import Namespace
+    from pathlib import Path
+
+    episode_list = Path("artifacts/eval/dev_stratified_k5_seed123.json")
+    if not episode_list.exists():
+        pytest.skip("stratified episode list not present")
+
+    args = Namespace(
+        episode_list=str(episode_list),
+        tasks=None,
+        split="dev",
+    )
+
+    class _Runner:
+        task_names = []
+
+        def variations(self, task_name, split):
+            return []
+
+    pool = _build_spec_pool(_Runner(), args)
+    assert len(pool) == 145
+    assert pool[0].task_name
 
 
 def test_sample_iter_specs_repeats_each_group():

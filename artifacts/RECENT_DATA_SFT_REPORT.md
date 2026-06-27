@@ -257,4 +257,19 @@
 ### 3.4 结论
 
 Contract/minimal 全线 **尚未超越** subtask + Sub-only RL（18.12 / 9%）。  
-当前最接近基线的是 **v3 Minimax native SFT**（6.07 / 3.4%），但 Main 规划弱、OOD 泛化差、离线指标不能代表环境表现，是后续数据与训练需要优先解决的三个方向。
+当前 **V7 Expert-Subtask Contract SFT** 为 contract 时代 Stratified-145 最优（mean **11.68** / success **2.8%**），优于 v3 native（6.07 / 3.4%）与 v4 gold（2.57 / 0%）在完整 145 题上的表现。
+
+**MGRPO（Sub-only + Joint）** 在 V7 上未带来 greedy eval 提升；详见 [`V7_CONTRACT_RL_REPORT.md`](V7_CONTRACT_RL_REPORT.md)。
+
+---
+
+## 四、V7 Expert-Subtask Contract（当前主线）
+
+| 项 | 内容 |
+|----|------|
+| **数据** | `data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/` |
+| **SFT ckpt** | `artifacts/checkpoints/sft_expert_subtask_contract_v3/` |
+| **Eval** | mean **11.68**, success **2.8%** (4/145), action_valid **16.8%** |
+| **RL** | Sub-only v3 / Joint v1 均 ≈ SFT；**已停止** |
+
+完整 RL 经验、bug 修复、指标说明见 [`V7_CONTRACT_RL_REPORT.md`](V7_CONTRACT_RL_REPORT.md)。

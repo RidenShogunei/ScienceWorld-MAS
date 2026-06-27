@@ -16,6 +16,7 @@ data/*
 artifacts/*
 !artifacts/.gitkeep
 !artifacts/RECENT_DATA_SFT_REPORT.md
+!artifacts/V7_CONTRACT_RL_REPORT.md
 !artifacts/eval/
 artifacts/eval/*
 !artifacts/eval/dev_stratified_k5_seed123.json
