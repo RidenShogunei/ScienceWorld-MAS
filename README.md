@@ -142,14 +142,51 @@ bash scripts/run_sft_expert_subtask_contract_v3.sh
 # Stratified-145 environment eval (greedy fp16)
 bash scripts/run_eval_expert_subtask_contract_v3.sh
 
-# Sub-only MGRPO (optional; see artifacts/RECENT_DATA_SFT_REPORT.md)
+# Sub-only MGRPO baseline (historical V7 RL result)
 bash scripts/run_sub_only_mgrpo_expert_subtask_contract_v3.sh
+
+# MrlX-like joint MGRPO ablation
+bash scripts/run_joint_mgrpo_expert_subtask_contract_v3_mrlx_like.sh
 ```
 
 Checkpoints and training logs stay local under `artifacts/checkpoints/` (gitignored).
 Experiment summary: [`artifacts/RECENT_DATA_SFT_REPORT.md`](artifacts/RECENT_DATA_SFT_REPORT.md).  
 V7 MGRPO lessons (Sub-only + Joint): [`artifacts/V7_CONTRACT_RL_REPORT.md`](artifacts/V7_CONTRACT_RL_REPORT.md).
+MrlX-like adaptation notes: [`docs/MRLX_LIKE_MGRPO_NOTES.md`](docs/MRLX_LIKE_MGRPO_NOTES.md).
 Pipeline history: [`docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md`](docs/CONTRACT_SFT_PIPELINE_EVOLUTION.md).
+
+## Repository Hygiene
+
+`main` should stay as the runnable, current research baseline. At the moment
+that baseline is V7 expert-subtask contract SFT plus the MrlX-like MGRPO
+ablation. Older datasets, smoke checkpoints, one-off cache files, and raw
+downloaded corpora are intentionally ignored and should not be recommitted.
+
+Tracked data/artifacts are limited to:
+
+```text
+data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/
+artifacts/eval/dev_stratified_k5_seed123.json
+artifacts/eval/sft_expert_subtask_contract_v3_stratified145.json
+artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter02_stratified145.json
+artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter10_stratified145.json
+artifacts/RECENT_DATA_SFT_REPORT.md
+artifacts/V7_CONTRACT_RL_REPORT.md
+```
+
+For new experiment directions, create a branch instead of layering another
+version onto `main`:
+
+```bash
+git switch -c codex/mgrpo-v8-mrlx-db
+```
+
+Keep branch-specific scripts and reports named by the experiment ID. Once an
+experiment becomes the new baseline, merge only the minimal runnable code,
+canonical dataset manifest, final eval JSON, and summary report back to `main`.
+Large checkpoints, raw rollouts, provider caches, and temporary aggregate files
+such as `all.jsonl` stay local or go to external storage/LFS only when they are
+explicitly part of the reproducible release.
 
 ## Tests
 
