@@ -74,18 +74,27 @@ python -m scienceworld_mas.evaluation.cli `
   --output artifacts/eval/gold_smoke.json
 ```
 
+Build v2 System1/System2 transition datasets from local Multi-Square
+ScienceWorld files:
+
+```powershell
+python -m scienceworld_mas.data.cli `
+  --input-dir data/raw/multisquare/ScienceWorld `
+  --output-dir data/processed/v2
+```
+
 ## Migration Status
 
 This branch currently contains the v2 protocol, official reward/scoring
 semantics, official ScienceWorld environment wrapper, fixed episode lists, and
 strict pass@1 evaluation runner. It also includes minimal non-model policies
-for smoke testing (`gold`, `first-valid`).
+for smoke testing (`gold`, `first-valid`) and structured System1/System2
+transition dataset builders.
 
 The next migrations should add, in order:
 
 1. System1/System2 model policy adapters under `src/scienceworld_mas/agents/`.
-2. System1/System2 data builders under `src/scienceworld_mas/data/`.
-3. System1 SFT and System2 BC/RL training entry points under
+2. System1 SFT and System2 BC/RL training entry points under
    `src/scienceworld_mas/training/`.
 
 Avoid adding new root-level scripts. New runnable entry points should live under

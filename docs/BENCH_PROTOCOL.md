@@ -100,3 +100,15 @@ artifacts/eval/dev_stratified_k5_seed123.json
 Training rollout sampling should be task-balanced or curriculum-controlled.
 Randomly sampling a small subset of tasks per iteration is not treated as a
 stable benchmark protocol.
+
+## Data Policy
+
+Multi-Square ScienceWorld data is represented as role-specific transitions:
+
+- System1 transition: `task_description + observation -> target_subgoal`
+- System2 transition: `subgoal + observation -> target_action + subgoal_done`
+
+Environment `reward`, cumulative `score`, and `done` metadata are retained in
+the transition records. Splits are deterministic and grouped by normalized task
+family for System1 and normalized subgoal for System2 to avoid step-level
+leakage.

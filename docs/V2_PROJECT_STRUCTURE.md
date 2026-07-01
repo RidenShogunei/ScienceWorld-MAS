@@ -46,6 +46,7 @@ The first milestone is a reproducible baseline runner with:
 - official score preservation, including negative scores
 - per-task evaluation report
 - strict pass@1 single-rollout evaluation
+- System1/System2 transition dataset builder
 
 The next milestone is:
 

@@ -5,13 +5,13 @@ __pycache__/
 .env
 
 # Local generated assets.
-artifacts/
-data/
-models/
+/artifacts/
+/data/
+/models/
 *.log
 *.tmp
 *.nohup
 
 # Local notebooks and scratch outputs.
-scratch/
+/scratch/
 notebooks/.ipynb_checkpoints/
