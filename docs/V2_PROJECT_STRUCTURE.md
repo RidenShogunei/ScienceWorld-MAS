@@ -47,9 +47,9 @@ The first milestone is a reproducible baseline runner with:
 - per-task evaluation report
 - strict pass@1 single-rollout evaluation
 - System1/System2 transition dataset builder
+- System1 SFT and System2 BC supervised training entry point
 
 The next milestone is:
 
 - System1/System2 model policy adapters
-- System1 SFT + System2 BC baseline
 - System2-only RL entry point

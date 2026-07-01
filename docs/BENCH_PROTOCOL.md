@@ -112,3 +112,28 @@ Environment `reward`, cumulative `score`, and `done` metadata are retained in
 the transition records. Splits are deterministic and grouped by normalized task
 family for System1 and normalized subgoal for System2 to avoid step-level
 leakage.
+
+## Supervised Warm Start
+
+The supervised baseline is intentionally role-separated:
+
+- System1 SFT trains only the high-level planner target.
+- System2 behavior cloning trains only executable actions and
+  `subgoal_done`.
+
+Both use the same processed transition root:
+
+```text
+data/processed/v2/{system1,system2}/{train,val,test}.jsonl
+```
+
+The package entry point is:
+
+```text
+python -m scienceworld_mas.training.supervised --role system1 ...
+python -m scienceworld_mas.training.supervised --role system2 ...
+```
+
+Supervised training writes `best/` and `last/` LoRA adapter directories. Fixed
+episode evaluation should load `best/` unless an experiment explicitly reports
+that it is evaluating `last/`.
