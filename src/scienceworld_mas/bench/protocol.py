@@ -63,6 +63,7 @@ DEFAULT_PROTOCOL = BenchProtocol(
         "official_score_by_task",
         "action_valid_rate",
         "format_error_rate",
+        "negative_score_rate",
         "mean_steps",
     ),
     system1_train_stages=(TrainingStage.SYSTEM1_SFT,),

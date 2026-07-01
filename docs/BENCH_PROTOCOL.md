@@ -25,6 +25,7 @@ Secondary metrics:
 - per-task mean score
 - action-valid rate
 - format-error rate
+- negative-score rate
 - mean steps
 
 Training rollout mean is a diagnostic only. It is not a replacement for fixed
@@ -40,6 +41,19 @@ Format validity and action validity are still important, but in the v2 baseline
 they should be logged as metrics or used as explicit filters. They should not
 silently redefine the benchmark reward unless an experiment is clearly marked
 as reward-shaping ablation.
+
+## Scoring Contract
+
+All evaluation code should aggregate results through
+`scienceworld_mas.bench.compute_benchmark_score`.
+
+The scorer intentionally:
+
+- averages official final episode scores directly
+- preserves negative scores in the mean
+- reports success as `score >= 100`
+- reports task-level means over the same episode records
+- treats action validity and format errors as secondary health metrics
 
 ## Episode Policy
 
