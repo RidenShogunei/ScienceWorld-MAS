@@ -19,9 +19,12 @@ from eval_episodes import (
     load_episode_list,
     save_episode_list,
 )
+from eval_metrics import attach_multi_square_episode_fields, multi_square_aggregate
 from collect_kimi_mas_rollouts import parse_minimal_contract_response, parse_sub_response
 from generate_sft_data import MAIN_SYSTEM, SUB_SYSTEM
 from generate_minimal_contract_sft_data import MINIMAL_MAIN_SYSTEM, MINIMAL_SUB_SYSTEM
+from l1.protocol import build_action_id_messages, decode_action_id, parse_action_id_response, rank_candidate_actions
+from plan_a.schema import PLAN_A_MAIN_SYSTEM, PLAN_A_SUB_SYSTEM, parse_plan_response
 from provenance import experiment_provenance
 from scienceworld_env import EpisodeSpec, ScienceWorldRunner
 from sft_trainer import ensure_torch_set_submodule
@@ -48,6 +51,18 @@ def main_messages(
         ]
     return [
         {"role": "system", "content": MAIN_SYSTEM},
+        {"role": "user", "content": f"Task:\n{task}\n\nPlanner state:\n{state}"},
+    ]
+
+
+def plan_a_main_messages(
+    task: str,
+    observation: str,
+    group_actions: list[str],
+) -> list[dict[str, str]]:
+    state = f"Group action:{group_actions}. Current observation: {observation}"
+    return [
+        {"role": "system", "content": PLAN_A_MAIN_SYSTEM},
         {"role": "user", "content": f"Task:\n{task}\n\nPlanner state:\n{state}"},
     ]
 
@@ -126,13 +141,23 @@ class HierarchicalPolicy:
         )
 
     def plan(self, task: str, observation: str, group_actions: list[str], args) -> tuple[str | None, str]:
+        if args.agent_interface == "plan-a":
+            text = self.generate(
+                "main",
+                plan_a_main_messages(task, observation, group_actions),
+                args.max_input_length,
+                args.main_max_new_tokens,
+            )
+            plan_contract = parse_plan_response(text)
+            return (plan_contract.subgoal_block() if plan_contract else None), text
+        interface = "contract-simple" if args.agent_interface == "action-id" else args.agent_interface
         text = self.generate(
             "main",
-            main_messages(task, observation, group_actions, args.agent_interface),
+            main_messages(task, observation, group_actions, interface),
             args.max_input_length,
             args.main_max_new_tokens,
         )
-        if args.agent_interface == "contract-simple":
+        if args.agent_interface in {"contract-simple", "action-id"}:
             contract = parse_minimal_contract_response(text)
             return (contract.to_tagged_json() if contract else None), text
         match = MAIN_PATTERN.search(text)
@@ -154,6 +179,154 @@ class HierarchicalPolicy:
         done = match.group(2).lower() == "true"
         return match.group(1).strip(), done, ("complete" if done else "continue"), text
 
+    def act_action_id(
+        self,
+        task: str,
+        contract: str,
+        observation: str,
+        candidate_actions: list[str],
+        recent_history: list[dict],
+        args,
+    ) -> tuple[str | None, str, bool]:
+        messages = build_action_id_messages(
+            task=task,
+            observation=observation,
+            candidate_actions=candidate_actions,
+            recent_history=recent_history[-args.history_limit :],
+            contract=contract,
+        )
+        if args.agent_interface == "plan-a":
+            messages[0]["content"] = PLAN_A_SUB_SYSTEM
+        text = self.generate(
+            "sub",
+            messages,
+            args.max_input_length,
+            args.sub_max_new_tokens,
+        )
+        action_id = parse_action_id_response(text)
+        action = decode_action_id(action_id, candidate_actions)
+        return action, text, action_id is not None
+
+
+def run_episode_action_id(
+    policy: HierarchicalPolicy,
+    runner: ScienceWorldRunner,
+    spec: EpisodeSpec,
+    args,
+) -> dict:
+    """Per-step Main plan/contract + Sub action-id (L1 minimal or Plan A)."""
+    observation, task, reset_info = runner.reset(spec)
+    steps_log: list[dict] = []
+    total_reward = 0.0
+    invalid_actions = 0
+    main_format_errors = 0
+    sub_parse_errors = 0
+    step_count = 0
+    done = False
+    episode_actions: list[str] = []
+    recent_history: list[dict] = []
+
+    while not done and step_count < args.step_limit:
+        plan, main_raw = policy.plan(task, observation, episode_actions, args)
+        if plan is None:
+            main_format_errors += 1
+            steps_log.append(
+                {
+                    "observation": observation,
+                    "main_raw": main_raw,
+                    "main_format_valid": False,
+                }
+            )
+            break
+
+        valid_actions = runner.valid_actions()
+        if args.agent_interface == "plan-a":
+            plan_contract = parse_plan_response(main_raw)
+            rank_context = plan_contract.rank_context() if plan_contract else f"{plan}\n{observation}"
+        else:
+            rank_context = f"{plan}\n{observation}"
+        candidates = rank_candidate_actions(
+            valid_actions,
+            context=rank_context,
+            max_actions=args.max_candidate_actions,
+        )
+        action, sub_raw, parse_ok = policy.act_action_id(
+            task,
+            plan,
+            observation,
+            candidates,
+            recent_history,
+            args,
+        )
+        if not parse_ok or action is None:
+            sub_parse_errors += 1
+            steps_log.append(
+                {
+                    "observation": observation,
+                    "main_raw": main_raw,
+                    "contract": plan,
+                    "sub_raw": sub_raw,
+                    "main_format_valid": True,
+                    "sub_parse_valid": False,
+                    "num_candidates": len(candidates),
+                }
+            )
+            break
+
+        next_observation, reward, done, info, action_valid = runner.step(action)
+        step_count += 1
+        total_reward += reward
+        invalid_actions += int(not action_valid)
+        step_score = float(info.get("score", 0.0))
+        print(
+            f"  step {step_count}/{args.step_limit} score={step_score:.1f} done={done}",
+            flush=True,
+        )
+        step_record = {
+            "observation": observation,
+            "main_raw": main_raw,
+            "contract": plan,
+            "sub_raw": sub_raw,
+            "action": action,
+            "main_format_valid": True,
+            "sub_parse_valid": True,
+            "action_valid": action_valid,
+            "num_candidates": len(candidates),
+            "reward": reward,
+            "score": float(info.get("score", 0.0)),
+            "next_observation": next_observation,
+            "environment_done": done,
+        }
+        steps_log.append(step_record)
+        recent_history.append(
+            {"action": action, "action_valid": action_valid, "subtask_done": False}
+        )
+        episode_actions.append(action)
+        observation = next_observation
+
+    final_score = steps_log[-1].get("score", 0.0) if steps_log and "score" in steps_log[-1] else 0.0
+    format_errors = main_format_errors + sub_parse_errors
+    return attach_multi_square_episode_fields(
+        {
+            "task_name": spec.task_name,
+            "variation_id": spec.variation_id,
+            "split": spec.split,
+            "task_description": task,
+            "reset_info": reset_info,
+            "groups": [{"contract": None, "main_raw": None, "steps": steps_log}],
+            "steps": step_count,
+            "total_reward": total_reward,
+            "final_score": final_score,
+            "success": final_score >= 100.0,
+            "invalid_actions": invalid_actions,
+            "action_valid_rate": (step_count - invalid_actions) / max(step_count, 1),
+            "format_errors": format_errors,
+            "main_format_errors": main_format_errors,
+            "sub_parse_errors": sub_parse_errors,
+            "environment_done": done,
+        }
+    )
+
 
 def choose_episodes(runner: ScienceWorldRunner, args) -> list[EpisodeSpec]:
     rng = random.Random(args.seed)
@@ -168,6 +341,9 @@ def choose_episodes(runner: ScienceWorldRunner, args) -> list[EpisodeSpec]:
 
 
 def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: EpisodeSpec, args) -> dict:
+    if args.agent_interface in {"action-id", "plan-a"}:
+        return run_episode_action_id(policy, runner, spec, args)
+
     observation, task, reset_info = runner.reset(spec)
     groups = []
     total_reward = 0.0
@@ -227,22 +403,24 @@ def run_episode(policy: HierarchicalPolicy, runner: ScienceWorldRunner, spec: Ep
     final_score = 0.0
     if groups and groups[-1]["steps"]:
         final_score = groups[-1]["steps"][-1].get("score", 0.0)
-    return {
-        "task_name": spec.task_name,
-        "variation_id": spec.variation_id,
-        "split": spec.split,
-        "task_description": task,
-        "reset_info": reset_info,
-        "groups": groups,
-        "steps": step_count,
-        "total_reward": total_reward,
-        "final_score": final_score,
-        "success": final_score >= 100.0,
-        "invalid_actions": invalid_actions,
-        "action_valid_rate": (step_count - invalid_actions) / max(step_count, 1),
-        "format_errors": format_errors,
-        "environment_done": done,
-    }
+    return attach_multi_square_episode_fields(
+        {
+            "task_name": spec.task_name,
+            "variation_id": spec.variation_id,
+            "split": spec.split,
+            "task_description": task,
+            "reset_info": reset_info,
+            "groups": groups,
+            "steps": step_count,
+            "total_reward": total_reward,
+            "final_score": final_score,
+            "success": final_score >= 100.0,
+            "invalid_actions": invalid_actions,
+            "action_valid_rate": (step_count - invalid_actions) / max(step_count, 1),
+            "format_errors": format_errors,
+            "environment_done": done,
+        }
+    )
 
 
 def resolve_episode_specs(runner: ScienceWorldRunner, args) -> tuple[list[EpisodeSpec], dict | None]:
@@ -307,9 +485,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-subtasks", type=int, default=15)
     parser.add_argument(
         "--agent-interface",
-        choices=("legacy", "contract-simple"),
+        choices=("legacy", "contract-simple", "action-id", "plan-a"),
         default="legacy",
-        help="Use the original Subtask+Observation interface or Contract+Observation.",
+        help=(
+            "legacy: subtask tags; contract-simple: minimal contract + free-form Sub; "
+            "action-id: minimal contract + action-id Sub (L1); "
+            "plan-a: [plan]{subgoal,focus_objects} + action-id Sub."
+        ),
+    )
+    parser.add_argument(
+        "--max-candidate-actions",
+        type=int,
+        default=32,
+        help="For action-id: max candidate actions per step (from env valid_actions).",
+    )
+    parser.add_argument(
+        "--history-limit",
+        type=int,
+        default=4,
+        help="For action-id: recent history steps passed to Sub.",
     )
     parser.add_argument("--max-input-length", type=int, default=768)
     parser.add_argument("--main-max-new-tokens", type=int, default=384)
@@ -343,13 +537,17 @@ def main() -> None:
             result = run_episode(policy, runner, spec, args)
             episodes.append(result)
             print(
-                f"  score={result['final_score']:.1f} steps={result['steps']} "
+                f"  score={result['final_score']:.1f} "
+                f"ms={result['ms_episode_score_pct']:.1f} "
+                f"win={result['ms_win']} steps={result['steps']} "
                 f"valid={result['action_valid_rate']:.2%}"
             )
     finally:
         runner.close()
 
     total_steps = sum(item["steps"] for item in episodes)
+    ms = multi_square_aggregate(episodes)
+    raw_mean_score = sum(item["final_score"] for item in episodes) / max(len(episodes), 1)
     report = {
         "provenance": experiment_provenance(
             {
@@ -365,15 +563,29 @@ def main() -> None:
         },
         "episode_list": episode_list_info,
         "metrics": {
+            "scoring_protocol": "multi_square",
             "episodes": len(episodes),
+            # Multi-Square primary metric: mean over episodes with ms_episode_score > 0.
+            "mean_score": ms["ms_mean_score_pct"],
+            "score_std": ms["ms_std_score_pct"],
+            "win_rate": ms["ms_win_rate"],
+            "fail_count": ms["ms_fail_count"],
+            "progress_episodes": ms["ms_success_count"],
+            "mean_score_all_clipped": ms["ms_mean_all_clipped_pct"],
+            # Full task completion (unchanged).
             "success_rate": sum(item["success"] for item in episodes) / max(len(episodes), 1),
-            "mean_score": sum(item["final_score"] for item in episodes) / max(len(episodes), 1),
+            # Legacy all-episode raw average (includes negatives); kept for debugging only.
+            "raw_mean_score": raw_mean_score,
             "action_valid_rate": (
                 sum(item["steps"] - item["invalid_actions"] for item in episodes)
                 / max(total_steps, 1)
             ),
             "format_error_rate": (
                 sum(item["format_errors"] for item in episodes) / max(len(episodes), 1)
+            ),
+            "sub_parse_error_rate": (
+                sum(item.get("sub_parse_errors", 0) for item in episodes)
+                / max(len(episodes), 1)
             ),
             "mean_steps": total_steps / max(len(episodes), 1),
         },

@@ -1,0 +1,48 @@
+# Continue L1 Main step RL from iter_0010 with early stopping.
+base_model: Qwen/Qwen3.5-9B
+main_adapter: artifacts/checkpoints/l1_main_step_rl_smoke/iter_0010/main
+sub_adapter: artifacts/checkpoints/action_id_sft_smoke/gold_contract/sub_agent/best
+
+states:
+  episode_list: artifacts/eval/dev_stratified_k5_seed123.json
+  output: artifacts/l1/decision_states_smoke.json
+  tasks:
+    - find-plant
+    - find-living-thing
+    - power-component
+  variations_per_task: 2
+  max_actions: 32
+  history_limit: 4
+  chunk_size: 3
+
+train:
+  save_dir: artifacts/checkpoints/l1_main_step_rl_smoke
+  group_size: 4
+  iterations: 60
+  states_per_iter: 32
+  seed: 123
+  lr: 1.0e-5
+  kl_beta: 0.0
+  clip_low: 0.1
+  clip_high: 0.1
+  max_grad_norm: 1.0
+  max_input_length: 6656
+  max_completion_tokens: 350
+  main_max_new_tokens: 350
+  sub_max_new_tokens: 32
+  rollout_temperature: 0.8
+  rollout_top_p: 0.9
+  use_4bit: true
+  invalid_format_advantage: -1.0
+  early_stop_patience: 3
+  early_stop_min_delta: 0.01
+
+reward:
+  expert_match: 1.0
+  action_valid: 0.2
+  format_valid: 0.1
+  format_penalty: 1.0
+  reward_delta_scale: 0.0
+
+eval:
+  output_json: artifacts/l1/eval_step_rl_continue.json
