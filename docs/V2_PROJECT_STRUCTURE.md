@@ -1,8 +1,8 @@
 # V2 Project Structure
 
 This branch is the cleaned-up v2 line. `main` preserves the historical
-contract/MGRPO work; this branch introduces a new project shape before moving
-large pieces of code.
+contract/MGRPO work; this branch intentionally does not carry the old
+root-level scripts, generated data, checkpoints, or legacy tests.
 
 ## Target Layout
 
@@ -30,9 +30,9 @@ docs/
 ## Migration Rules
 
 1. New code goes under `src/scienceworld_mas/`.
-2. Old root-level scripts stay available until a v2 replacement exists.
-3. Once a v2 replacement is tested, the old script should move to `legacy/` or
-   be removed from this branch.
+2. Do not add root-level runnable scripts.
+3. Historical v1 code should be read from `main` or git history, not copied
+   back into this branch.
 4. Contract protocol, MrlX-like MGRPO, and joint Main+Sub RL remain ablations
    unless fixed-list evaluation beats the v2 baseline.
 5. Large checkpoints, raw rollouts, provider caches, and temporary aggregate

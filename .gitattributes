@@ -1,6 +1,1 @@
-data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/train.jsonl filter=lfs diff=lfs merge=lfs -text
-data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/val.jsonl filter=lfs diff=lfs merge=lfs -text
-data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/test.jsonl filter=lfs diff=lfs merge=lfs -text
-artifacts/eval/sft_expert_subtask_contract_v3_stratified145.json filter=lfs diff=lfs merge=lfs -text
-artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter02_stratified145.json filter=lfs diff=lfs merge=lfs -text
-artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter10_stratified145.json filter=lfs diff=lfs merge=lfs -text
+# No active LFS-tracked data is committed on the v2 branch.

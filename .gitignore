@@ -4,28 +4,14 @@ __pycache__/
 .venv/
 .env
 
-# Generated data: only V7 expert-subtask contract SFT is tracked in git/LFS.
-data/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/
-!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/*.jsonl
-!data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/*.json
-data/expert_subtask_contract_sft_v3_simple_minimax_sample1000/all.jsonl
-
-# Checkpoints and training logs stay local; keep summary report + key eval JSON.
-artifacts/*
-!artifacts/.gitkeep
-!artifacts/RECENT_DATA_SFT_REPORT.md
-!artifacts/V7_CONTRACT_RL_REPORT.md
-!artifacts/eval/
-artifacts/eval/*
-!artifacts/eval/dev_stratified_k5_seed123.json
-!artifacts/eval/sft_expert_subtask_contract_v3_stratified145.json
-!artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter02_stratified145.json
-!artifacts/eval/mgrpo_expert_subtask_contract_v3_v3_iter10_stratified145.json
-
+# Local generated assets.
+artifacts/
+data/
 models/
 *.log
 *.tmp
 *.nohup
+
+# Local notebooks and scratch outputs.
+scratch/
+notebooks/.ipynb_checkpoints/
