@@ -4,7 +4,10 @@
   "reference": "Multi-Square / Multi2 System1-System2 protocol",
   "episode_list": "artifacts/eval/dev_stratified_k5_seed123.json",
   "primary_metric": "official_mean_score",
-  "secondary_metrics": [
+  "comparable_metrics": [
+    "official_mean_score"
+  ],
+  "diagnostic_metrics": [
     "success_rate",
     "official_score_by_task",
     "action_valid_rate",
@@ -12,6 +15,12 @@
     "negative_score_rate",
     "mean_steps"
   ],
+  "rollout_policy": {
+    "mode": "strict_pass_at_1",
+    "attempts_per_episode": 1,
+    "allow_best_of_n": false,
+    "allow_retry_on_failure": false
+  },
   "training_plan": {
     "system1_planner": [
       "sft"

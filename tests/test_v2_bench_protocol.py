@@ -1,6 +1,7 @@
 from scienceworld_mas.bench import (
     DEFAULT_PROTOCOL,
     EpisodeScore,
+    RolloutMode,
     TrainingStage,
     compute_benchmark_score,
     official_reward_from_score,
@@ -10,8 +11,13 @@ from scienceworld_mas.bench import (
 def test_default_protocol_is_bench_faithful():
     DEFAULT_PROTOCOL.validate()
     assert DEFAULT_PROTOCOL.metric_primary == "official_mean_score"
+    assert DEFAULT_PROTOCOL.comparable_metrics == ("official_mean_score",)
     assert DEFAULT_PROTOCOL.use_official_score_for_rl
     assert DEFAULT_PROTOCOL.preserve_negative_scores
+    assert DEFAULT_PROTOCOL.rollout_mode == RolloutMode.STRICT_PASS_AT_1
+    assert DEFAULT_PROTOCOL.attempts_per_episode == 1
+    assert not DEFAULT_PROTOCOL.allow_best_of_n
+    assert not DEFAULT_PROTOCOL.allow_retry_on_failure
     assert DEFAULT_PROTOCOL.system1_train_stages == (TrainingStage.SYSTEM1_SFT,)
     assert TrainingStage.JOINT_RL_ABLATION in DEFAULT_PROTOCOL.ablation_stages
 

@@ -15,11 +15,18 @@ The main line follows the Multi-Square/System1-System2 framing:
 - **Joint Main+Sub RL**: treated as an ablation, not the default benchmark
   route.
 
-## Metrics
+## Comparable Metrics
 
-The primary metric is official ScienceWorld mean score on a fixed episode list.
+The comparable ScienceWorld metric is official mean score on a fixed episode
+list. This is the metric intended for comparison with Multi-Square/ScienceWorld
+results.
 
-Secondary metrics:
+Do not compare models using success rate, best-of-N success, sampled rollout
+mean, or reward-shaped scores.
+
+## Diagnostic Metrics
+
+These are useful for debugging but are not the headline comparable score:
 
 - success rate
 - per-task mean score
@@ -30,6 +37,20 @@ Secondary metrics:
 
 Training rollout mean is a diagnostic only. It is not a replacement for fixed
 episode evaluation.
+
+## Rollout Policy
+
+Comparable evaluation uses strict pass@1:
+
+- one attempt per episode
+- no retry on failure
+- no best-of-N or majority vote
+- fixed episode list
+- official final ScienceWorld score is recorded for that single rollout
+
+Sampling-based, best-of-N, curriculum, or training-rollout evaluations must be
+reported as ablations or diagnostics, not as directly comparable benchmark
+results.
 
 ## Reward Policy
 
