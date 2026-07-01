@@ -25,6 +25,7 @@ class PolicyContext:
     task_description: str
     observation: str
     step_index: int
+    valid_actions: tuple[str, ...]
     history: tuple[StepTrace, ...]
 
 

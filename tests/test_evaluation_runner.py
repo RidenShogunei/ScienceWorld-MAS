@@ -20,14 +20,28 @@ class SequencePolicy:
         return ActionDecision(action=action, raw_response=action, format_valid=True)
 
 
+class FirstContextActionPolicy:
+    def reset_episode(self, task_description: str) -> None:
+        return None
+
+    def act(self, context: PolicyContext) -> ActionDecision:
+        return ActionDecision(action=context.valid_actions[0], raw_response="from-context")
+
+
 @dataclass
 class FakeRunner:
     scores: list[float]
-    valid_actions: set[str]
+    valid_action_set: set[str]
 
     def reset(self, spec):
         self.step_index = 0
         return "start", "do task", {"score": 0.0}
+
+    def valid_actions(self):
+        return sorted(self.valid_action_set)
+
+    def gold_actions(self):
+        return ["look"]
 
     def step(self, action: str) -> StepResult:
         score = self.scores[self.step_index]
@@ -37,12 +51,12 @@ class FakeRunner:
             reward=score,
             done=self.step_index >= len(self.scores),
             info={"score": score},
-            action_valid=action in self.valid_actions,
+            action_valid=action in self.valid_action_set,
         )
 
 
 def test_run_episode_records_single_pass_official_score():
-    runner = FakeRunner(scores=[1.0, -100.0], valid_actions={"look", "bad"})
+    runner = FakeRunner(scores=[1.0, -100.0], valid_action_set={"look", "bad"})
     policy = SequencePolicy(["look", "bad"])
     trace = run_episode(
         runner,
@@ -57,7 +71,7 @@ def test_run_episode_records_single_pass_official_score():
 
 
 def test_run_episode_stops_on_format_error_without_retry():
-    runner = FakeRunner(scores=[100.0], valid_actions={"finish"})
+    runner = FakeRunner(scores=[100.0], valid_action_set={"finish"})
     policy = SequencePolicy([])
     trace = run_episode(
         runner,
@@ -68,3 +82,16 @@ def test_run_episode_stops_on_format_error_without_retry():
     assert trace.final_score == 0.0
     assert trace.format_error_count == 1
     assert trace.action_count == 0
+
+
+def test_run_episode_passes_valid_actions_to_policy():
+    runner = FakeRunner(scores=[100.0], valid_action_set={"finish"})
+    policy = FirstContextActionPolicy()
+    trace = run_episode(
+        runner,
+        policy,
+        EpisodeSpec("task", 0, "dev"),
+        step_limit=50,
+    )
+    assert trace.final_score == 100.0
+    assert trace.steps[0].action == "finish"

@@ -54,7 +54,7 @@ class ScienceWorldRunner:
         raise ValueError(f"unknown split: {split}")
 
     def reset(self, spec: EpisodeSpec) -> tuple[str, str, dict[str, Any]]:
-        self.env.load(spec.task_name, spec.variation_id)
+        self.env.load(spec.task_name, spec.variation_id, generateGoldPath=True)
         observation, info = self.env.reset()
         return str(observation), str(self.env.get_task_description()), dict(info)
 

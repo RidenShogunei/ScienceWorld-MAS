@@ -80,6 +80,15 @@ Strict pass@1 environment rollout is implemented in
 `scienceworld_mas.evaluation.run_episode` and
 `scienceworld_mas.evaluation.evaluate_episodes`.
 
+The command-line smoke entry point is:
+
+```text
+python -m scienceworld_mas.evaluation.cli --policy gold ...
+```
+
+`gold` is an oracle environment/evaluator smoke policy. It must not be reported
+as a model result.
+
 ## Episode Policy
 
 Evaluation uses:

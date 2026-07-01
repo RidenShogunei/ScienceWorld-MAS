@@ -103,6 +103,13 @@ def run_episode(
 
     observation, task_description, reset_info = runner.reset(spec)
     policy.reset_episode(task_description)
+    prepare_episode = getattr(policy, "prepare_episode", None)
+    if callable(prepare_episode):
+        prepare_episode(
+            spec=spec,
+            task_description=task_description,
+            gold_actions=tuple(runner.gold_actions()),
+        )
     history: list[StepTrace] = []
     format_error_count = 0
     environment_done = False
@@ -113,6 +120,7 @@ def run_episode(
             task_description=task_description,
             observation=observation,
             step_index=step_index,
+            valid_actions=tuple(runner.valid_actions()),
             history=tuple(history),
         )
         decision = _coerce_decision(policy.act(context))

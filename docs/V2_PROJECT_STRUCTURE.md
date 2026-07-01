@@ -49,6 +49,6 @@ The first milestone is a reproducible baseline runner with:
 
 The next milestone is:
 
-- System1/System2 policy adapters
+- System1/System2 model policy adapters
 - System1 SFT + System2 BC baseline
 - System2-only RL entry point

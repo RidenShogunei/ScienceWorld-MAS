@@ -53,6 +53,7 @@ Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 Run the current v2 tests:
@@ -61,15 +62,28 @@ Run the current v2 tests:
 python -m pytest tests -q
 ```
 
+Run a strict pass@1 environment smoke with the ScienceWorld gold action
+sequence:
+
+```powershell
+python -m scienceworld_mas.evaluation.cli `
+  --policy gold `
+  --tasks boil `
+  --k-per-task 1 `
+  --split dev `
+  --output artifacts/eval/gold_smoke.json
+```
+
 ## Migration Status
 
 This branch currently contains the v2 protocol, official reward/scoring
 semantics, official ScienceWorld environment wrapper, fixed episode lists, and
-strict pass@1 evaluation runner.
+strict pass@1 evaluation runner. It also includes minimal non-model policies
+for smoke testing (`gold`, `first-valid`).
 
 The next migrations should add, in order:
 
-1. System1/System2 policy adapters under `src/scienceworld_mas/agents/`.
+1. System1/System2 model policy adapters under `src/scienceworld_mas/agents/`.
 2. System1/System2 data builders under `src/scienceworld_mas/data/`.
 3. System1 SFT and System2 BC/RL training entry points under
    `src/scienceworld_mas/training/`.
