@@ -137,3 +137,23 @@ python -m scienceworld_mas.training.supervised --role system2 ...
 Supervised training writes `best/` and `last/` LoRA adapter directories. Fixed
 episode evaluation should load `best/` unless an experiment explicitly reports
 that it is evaluating `last/`.
+
+## Model Evaluation Policy
+
+The default model policy is hierarchical:
+
+1. System1 receives `task_description + observation` and emits one subgoal.
+2. System2 receives `subgoal + observation` and emits
+   `[action]...[/action][subgoal_done]true|false[/subgoal_done]`.
+3. System1 is called again only after System2 marks the current subgoal done.
+
+The evaluation runner still passes valid actions and history to every policy
+for diagnostics and future ablations, but the default v2 supervised model
+policy does not include them in the prompt because they are not present in the
+Multi-Square transition training distribution.
+
+The command-line entry point is:
+
+```text
+python -m scienceworld_mas.evaluation.cli --policy hf-hierarchical ...
+```

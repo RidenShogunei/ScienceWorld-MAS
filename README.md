@@ -104,19 +104,33 @@ Each run writes `best/` and `last/` LoRA adapter directories under the selected
 output directory. `best/` is selected by validation loss when a validation split
 exists; otherwise it mirrors the final checkpoint.
 
+Evaluate the trained hierarchical policy with the same strict pass@1 protocol:
+
+```powershell
+python -m scienceworld_mas.evaluation.cli `
+  --policy hf-hierarchical `
+  --base-model Qwen/Qwen2.5-1.5B-Instruct `
+  --system1-adapter artifacts/checkpoints/v2/system1_sft/best `
+  --system2-adapter artifacts/checkpoints/v2/system2_bc/best `
+  --episode-list artifacts/eval/dev_stratified_k5_seed123.json `
+  --step-limit 100 `
+  --output artifacts/eval/v2_hf_hierarchical.json
+```
+
 ## Migration Status
 
 This branch currently contains the v2 protocol, official reward/scoring
 semantics, official ScienceWorld environment wrapper, fixed episode lists, and
 strict pass@1 evaluation runner. It also includes minimal non-model policies
 for smoke testing (`gold`, `first-valid`), structured System1/System2
-transition dataset builders, and supervised System1/System2 LoRA training
-entry points.
+transition dataset builders, supervised System1/System2 LoRA training entry
+points, and a Hugging Face/PEFT hierarchical model policy for strict
+environment evaluation.
 
 The next migrations should add, in order:
 
-1. System1/System2 model policy adapters under `src/scienceworld_mas/agents/`.
-2. System2-only RL training under `src/scienceworld_mas/training/`.
+1. System2-only RL training under `src/scienceworld_mas/training/`.
+2. Experiment configs for canonical train/eval runs under `configs/`.
 
 Avoid adding new root-level scripts. New runnable entry points should live under
 `src/scienceworld_mas/` and be exposed through small, named CLI modules.
