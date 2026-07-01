@@ -1,0 +1,34 @@
+{
+  "protocol": "scienceworld_mas_v2_bench_faithful",
+  "benchmark": "ScienceWorld",
+  "reference": "Multi-Square / Multi2 System1-System2 protocol",
+  "episode_list": "artifacts/eval/dev_stratified_k5_seed123.json",
+  "primary_metric": "official_mean_score",
+  "secondary_metrics": [
+    "success_rate",
+    "official_score_by_task",
+    "action_valid_rate",
+    "format_error_rate",
+    "mean_steps"
+  ],
+  "training_plan": {
+    "system1_planner": [
+      "sft"
+    ],
+    "system2_executor": [
+      "behavior_cloning",
+      "offline_rl",
+      "online_rl"
+    ],
+    "ablations": [
+      "contract_protocol",
+      "joint_main_sub_rl",
+      "mrlx_like_mgrpo"
+    ]
+  },
+  "reward_policy": {
+    "rl_reward_source": "official_scienceworld_score",
+    "preserve_negative_scores": true,
+    "format_and_action_validity": "logged_metrics_or_filters_not_primary_reward"
+  }
+}

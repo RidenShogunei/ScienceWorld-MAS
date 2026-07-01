@@ -4,6 +4,21 @@ An independent research project for hierarchical Main/Sub agent training in
 ScienceWorld. The initial supervised baseline uses the official expert
 trajectories released with Multi-Square.
 
+## V2 Branch Direction
+
+This branch is a clean v2 restructure. The target is a bench-faithful
+ScienceWorld project rather than another layer on top of the historical
+contract/MGRPO experiments.
+
+Start here:
+
+- [`docs/BENCH_PROTOCOL.md`](docs/BENCH_PROTOCOL.md): fixed evaluation,
+  official reward semantics, and System1/System2 training boundaries.
+- [`docs/V2_PROJECT_STRUCTURE.md`](docs/V2_PROJECT_STRUCTURE.md): target
+  repository layout and migration rules.
+- [`configs/bench/bench_faithful_v2.json`](configs/bench/bench_faithful_v2.json):
+  the canonical v2 protocol config.
+
 For a clean-machine setup and experiment-recording rules, see
 [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md).
 
