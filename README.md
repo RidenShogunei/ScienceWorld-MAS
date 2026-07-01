@@ -63,13 +63,15 @@ python -m pytest tests -q
 
 ## Migration Status
 
-This branch currently contains the v2 protocol skeleton and reward semantics.
+This branch currently contains the v2 protocol, official reward/scoring
+semantics, official ScienceWorld environment wrapper, fixed episode lists, and
+strict pass@1 evaluation runner.
+
 The next migrations should add, in order:
 
-1. Thin ScienceWorld environment wrapper under `src/scienceworld_mas/env/`.
-2. Fixed-list evaluator with per-task reporting under `src/scienceworld_mas/evaluation/`.
-3. System1/System2 data builders under `src/scienceworld_mas/data/`.
-4. System1 SFT and System2 BC/RL training entry points under
+1. System1/System2 policy adapters under `src/scienceworld_mas/agents/`.
+2. System1/System2 data builders under `src/scienceworld_mas/data/`.
+3. System1 SFT and System2 BC/RL training entry points under
    `src/scienceworld_mas/training/`.
 
 Avoid adding new root-level scripts. New runnable entry points should live under

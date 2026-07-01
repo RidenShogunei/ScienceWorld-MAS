@@ -76,6 +76,10 @@ The scorer intentionally:
 - reports task-level means over the same episode records
 - treats action validity and format errors as secondary health metrics
 
+Strict pass@1 environment rollout is implemented in
+`scienceworld_mas.evaluation.run_episode` and
+`scienceworld_mas.evaluation.evaluate_episodes`.
+
 ## Episode Policy
 
 Evaluation uses:
